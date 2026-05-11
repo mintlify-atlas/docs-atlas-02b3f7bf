@@ -1,0 +1,167 @@
+---
+title: "Telegram Web K multi-worker architecture explained"
+description: "Multi-worker, manager-driven architecture behind Telegram Web K: how the main thread, Shared Worker, Service Worker, and Crypto Worker coordinate."
+keywords: ['architecture', 'shared worker', 'service worker', 'managers', 'rootScope', 'superMessagePort', 'MTProto']
+---
+
+Telegram Web K is not a conventional single-threaded web app. It distributes work across several browser contexts — a main UI thread, a Shared Worker, a Service Worker, and dedicated workers for cryptography and Lottie animations — so that network I/O, cryptographic computation, and rendering never compete for the same thread. Understanding how these pieces fit together is the first step toward working confidently in the codebase.
+
+## High-level overview
+
+```
+Browser Tab (main thread)
+│  SolidJS UI  ──► rootScope events
+│  getProxiedManagers() ──► async proxy
+│       │ postMessage (superMessagePort)
+│       ▼
+Shared Worker  (src/lib/mainWorker/index.worker.ts)
+│  55+ App Managers (appMessagesManager, appChatsManager, …)
+│  MTProto layer (networker, authorizer, schema)
+│  cryptoWorker proxy
+│       │ CryptoMethods
+│       ▼
+Crypto Worker  (src/lib/crypto/crypto.worker.ts)
+│  sha1, sha256, AES-IGE, RSA, DH, SRP, PBKDF2
+
+Service Worker  (sw.ts → src/lib/serviceWorker/)
+│  CacheStorage, push notifications, file streaming, HLS
+│  Communicates with both the main thread and Shared Worker
+
+Lottie Workers  (src/lib/rlottie/rlottie.worker.ts)
+│  WebAssembly rlottie renderer for animated stickers
+```
+
+The Shared Worker is the single source of truth for application state. Because it is a `SharedWorker`, it is shared across all browser tabs that have the app open — state does not fragment between tabs.
+
+## The manager pattern
+
+Business logic lives in `AppManager` subclasses under `src/lib/appManagers/`. There are more than 50 of them, each owning a specific domain:
+
+| Manager | Responsibility |
+|---|---|
+| `appMessagesManager` | Messages, history, drafts |
+| `appChatsManager` | Chat and channel metadata |
+| `appUsersManager` | User profiles and contacts |
+| `appStickersManager` | Sticker sets and favourites |
+| `appNotificationsManager` | Push and in-app notifications |
+| `apiManager` | Raw MTProto API invocations |
+| `apiUpdatesManager` | Server update processing |
+| `appStateManager` | Persistent application state |
+
+All managers run inside the Shared Worker. They are instantiated by `appManagersManager` (`src/lib/appManagers/appManagersManager.ts`) and communicate with each other directly — no message passing required between managers, because they share the same worker context.
+
+Managers extend a common `AppManager` base class (`src/lib/appManagers/manager.ts`) and implement an `after()` lifecycle hook that runs once initial state has been loaded:
+
+```typescript
+import {AppManager} from '@appManagers/manager';
+
+export class AppExampleManager extends AppManager {
+  protected after() {
+    this.apiUpdatesManager.addMultipleEventsListeners({
+      updateSomething: this.onUpdateSomething
+    });
+  }
+
+  private onUpdateSomething = (update) => {
+    // handle the update, then broadcast via rootScope
+  };
+}
+```
+
+## rootScope — the event bus
+
+`src/lib/rootScope.ts` is a typed global event emitter. It defines the `BroadcastEvents` interface, which lists every event that can flow between workers and the main thread (over 100 named events like `'messages_read'`, `'peer_update'`, `'premium_toggle'`, and so on).
+
+On the main thread, components subscribe to events to drive reactive UI updates:
+
+```typescript
+import rootScope from '@lib/rootScope';
+
+rootScope.addEventListener('peer_title_edit', ({peerId}) => {
+  // re-render the chat header
+});
+```
+
+`rootScope` also holds the proxied managers reference (`rootScope.managers`) and the authenticated user's peer ID (`rootScope.myId`).
+
+<Note>
+`rootScope.managers.*` calls are always asynchronous. Every method returns a `Promise` because the call is serialised over `postMessage` to the Shared Worker, even if the underlying manager method is synchronous.
+</Note>
+
+## Accessing managers from the main thread
+
+The main thread never imports manager classes directly. Instead, `src/lib/getProxiedManagers.ts` wraps the `apiManagerProxy` in a `Proxy` object that intercepts every property access and method call, serialises it as a `WorkerTask`, sends it over `superMessagePort`, and returns a `Promise` that resolves when the worker replies.
+
+```typescript
+// Inside a component or store — transparent async proxy:
+const chat = await rootScope.managers.appChatsManager.getChat(chatId);
+```
+
+The TypeScript types for the proxy are generated so that every manager method's return type is automatically wrapped in `Promise<T>`, giving full type safety across the worker boundary.
+
+## superMessagePort — structured inter-worker communication
+
+`src/lib/superMessagePort.ts` is the custom message-passing layer used between all workers. It sits on top of the browser's native `postMessage` / `MessageChannel` APIs and adds:
+
+- **Task batching** — outbound messages are coalesced into a single `BatchTask` per microtask tick to reduce serialisation overhead.
+- **Ack / result pairs** — callers can request an acknowledgement before the full result arrives, useful for cache hit detection.
+- **Lock integration** — uses the `navigator.locks` API to detect tab closures and clean up stale ports without relying on unreliable `beforeunload` events.
+- **Typed listeners** — the generic type parameters `Workers` and `Masters` provide compile-time guarantees that only known task types are sent and received.
+
+```
+superMessagePort task types:
+  invoke  →  call a named listener on the other side
+  result  ←  return value from an invoke
+  ack     ←  early acknowledgement (cached result available)
+  batch   →  multiple tasks in one postMessage
+  lock    →  Web Locks API integration for tab lifecycle
+  close   →  port disconnection notification
+```
+
+## MTProto layer
+
+The raw Telegram protocol implementation lives in `src/lib/mtproto/` and runs entirely inside the Shared Worker:
+
+| File | Purpose |
+|---|---|
+| `networker.ts` | Manages MTProto sessions, sequence numbers, message encryption |
+| `authorizer.ts` | Performs the DH key exchange to establish an auth key |
+| `schema.ts` | TL schema deserialiser / serialiser |
+| `transports/` | WebSocket, HTTP long-poll, and transport selection |
+| `dcConfigurator.ts` | Data centre configuration and failover |
+| `networkStats.ts` | Per-DC request/response byte counters |
+
+Cryptographic operations required by the networker (AES-IGE encryption, SHA-1/SHA-256 hashing, DH computation, SRP authentication) are delegated to the Crypto Worker via `cryptoMessagePort`, keeping the Shared Worker's event loop free.
+
+## SolidJS UI layer
+
+The main thread renders the UI with a custom fork of Solid.js (`src/vendor/solid/`). Solid's fine-grained reactivity model means only the specific DOM nodes that depend on changed signals are updated — no virtual DOM diffing. Components live in `src/components/` and are `.tsx` files. Reactive stores (`src/stores/`) bridge `rootScope` events into Solid signals:
+
+```typescript
+import {createRoot, createSignal} from 'solid-js';
+import rootScope from '@lib/rootScope';
+
+const [isPremium, setIsPremium] = createRoot(() => createSignal(false));
+rootScope.addEventListener('premium_toggle', setIsPremium);
+
+export default function useIsPremium() {
+  return isPremium;
+}
+```
+
+## Key source paths
+
+| Path | What lives there |
+|---|---|
+| `src/index.ts` | Main thread entry point, account init |
+| `src/lib/mainWorker/index.worker.ts` | Shared Worker entry point |
+| `src/lib/serviceWorker/index.service.ts` | Service Worker entry point |
+| `src/lib/rootScope.ts` | Global event bus |
+| `src/lib/superMessagePort.ts` | Inter-worker message protocol |
+| `src/lib/getProxiedManagers.ts` | Manager proxy for the main thread |
+| `src/lib/appManagers/` | All 55+ domain managers |
+| `src/lib/mtproto/` | MTProto protocol implementation |
+| `src/lib/crypto/crypto.worker.ts` | Crypto Worker entry point |
+| `src/lib/rlottie/rlottie.worker.ts` | Lottie Worker entry point |
+| `src/components/` | SolidJS UI components |
+| `src/stores/` | Reactive Solid stores |

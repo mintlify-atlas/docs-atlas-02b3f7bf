@@ -1,0 +1,166 @@
+---
+title: "Privacy and security settings in Telegram Web K browser"
+description: "Configure who sees your data, lock the app with a passcode, manage active sessions, set up 2FA and passkeys, block users, and control self-destructing messages."
+keywords: ["privacy", "security", "passcode lock", "two-factor authentication", "2FA", "passkeys", "blocked users", "secret chats", "active sessions", "TTL"]
+---
+
+Telegram Web K exposes the full suite of Telegram's privacy and security controls through its settings sidebar. You can configure who can see your phone number, last seen status, profile photo, and forwarded messages; lock the browser tab with an encrypted passcode; manage two-factor authentication and passkeys; and audit every active session on your account. Privacy settings live under **Settings → Privacy & Security**, which maps to the tabs in `src/components/sidebarLeft/tabs/privacy/`.
+
+## Privacy settings
+
+The privacy section is divided into per-field visibility rules. Each rule supports audience options (everybody, my contacts, nobody) and can have exceptions — specific users or groups that override the general rule.
+
+<AccordionGroup>
+  <Accordion title="Last seen and online status">
+    Controls who can see your **last seen** timestamp and online indicator. Options: Everybody, My Contacts, Nobody. A separate exception list lets you always-show or always-hide for specific users.
+
+    Managed by `lastSeen.ts`. Premium users can set this to Nobody without losing the ability to see others' last seen.
+  </Accordion>
+
+  <Accordion title="Profile photo">
+    Controls who can see your profile photo. Options: Everybody, My Contacts, Nobody. Configured in `profilePhoto.ts`.
+  </Accordion>
+
+  <Accordion title="Phone number">
+    Controls who can see your phone number. Options: Everybody, My Contacts, Nobody. A sub-setting controls who can find you by phone number (**Added by phone**). Configured in `phoneNumber.ts`.
+
+    <Info>
+      Users who signed up with an anonymous number from Fragment will see their Fragment number listed here instead of a traditional phone number.
+    </Info>
+  </Accordion>
+
+  <Accordion title="Bio and birthday">
+    Your **About** bio and **Birthday** can each be shown to Everybody, My Contacts, or Nobody. Birthday visibility is managed separately so you can share it only with close contacts.
+  </Accordion>
+
+  <Accordion title="Forwarded messages">
+    Controls whether forwarded copies of your messages include a link back to your account. Setting this to Nobody means your name appears as a non-clickable label in forwarded messages. Managed in `forwardMessages.ts`.
+  </Accordion>
+
+  <Accordion title="Calls">
+    Controls who can call you on Telegram (**Calls** setting) and a separate **Peer-to-peer** sub-setting that determines whether calls route directly between devices or via Telegram's servers.
+
+    Routing calls through Telegram's servers hides your IP address from the other party at the cost of slightly higher latency. Managed in `calls.ts`.
+  </Accordion>
+
+  <Accordion title="Group and channel invites">
+    Controls who can add you to groups and channels without your approval. Nobody means every invite requires your manual acceptance.
+  </Accordion>
+
+  <Accordion title="Voice messages">
+    Controls who can send you voice messages. This is a Premium-gated setting; configure it in `voices.ts`.
+  </Accordion>
+
+  <Accordion title="Messages and new chats">
+    Controls who can open new chat conversations with you. Setting this to My Contacts or Nobody prompts unknown senders to pay a Stars fee before their message reaches your inbox. This is a Premium setting managed under `messages/`.
+  </Accordion>
+
+  <Accordion title="Saved music">
+    Controls who can see your saved music list on your profile. Managed in `savedMusic.ts`.
+  </Accordion>
+</AccordionGroup>
+
+## Passcode lock
+
+The passcode lock encrypts the local IndexedDB storage so the app cannot be read if someone accesses your browser session. It is implemented in `src/lib/passcode/`.
+
+<Steps>
+  <Step title="Enable the passcode">
+    Go to **Settings → Privacy & Security → Passcode Lock** and click **Turn On**. Choose a 4-digit PIN or an alphanumeric password.
+  </Step>
+
+  <Step title="Set auto-lock timing">
+    Pick how long the app stays unlocked when idle: 1 minute, 5 minutes, 1 hour, or never auto-lock (manual lock only).
+  </Step>
+
+  <Step title="Lock the app">
+    Click the lock icon that appears in the sidebar after enabling the passcode, or let the auto-lock timer trigger. The UI is replaced by a PIN/password entry screen.
+  </Step>
+
+  <Step title="Unlock">
+    Enter your passcode to decrypt and restore the session. If you forget the passcode, you must log out and log back in (local data is wiped).
+  </Step>
+</Steps>
+
+<Warning>
+  The passcode protects locally cached data in the browser. It does not affect your Telegram account itself — anyone with your account credentials can still log in from another device.
+</Warning>
+
+## Two-factor authentication
+
+2FA adds a password requirement on top of the SMS/call code when logging in from a new device. It is managed by `passwordManager.ts`.
+
+**Setup includes:**
+- A strong password of your choice.
+- An optional hint displayed on the login screen.
+- A recovery email address. Telegram sends a code to this address if you forget your 2FA password.
+
+<Tip>
+  Use a unique, strong password for 2FA and store your recovery email securely. Losing both the password and access to the recovery email will result in a 7-day account reset wait period.
+</Tip>
+
+## Passkeys (FIDO2 / WebAuthn)
+
+Web K supports passkey login via the browser's WebAuthn API (`passkey.tsx`). Passkeys replace your password with a hardware or platform authenticator (Face ID, Touch ID, Windows Hello, or a security key).
+
+**To register a passkey:**
+1. Go to **Settings → Privacy & Security → Passkeys**.
+2. Click **Add a Passkey** and follow your browser's prompts.
+3. Future logins can use the passkey instead of a 2FA password.
+
+Passkeys are phishing-resistant and work across all browsers that support the WebAuthn Level 2 specification.
+
+## Active sessions
+
+The **Active Sessions** panel lists every device and app currently logged into your account, with the last active timestamp, device name, app version, and IP geolocation.
+
+From this panel you can:
+- Terminate any individual session with a single click.
+- Terminate all other sessions at once to revoke access everywhere except the current browser.
+
+## Active web sessions
+
+Separate from device sessions, **Active Web Sessions** lists every Telegram Login button or Mini App that has received an auth token from your account. Each entry shows the website domain and the date authorization was granted. You can revoke individual web sessions or clear all of them.
+
+## Blocked users
+
+The **Blocked Users** list prevents the blocked account from sending you messages, seeing your last seen, or calling you. Block or unblock users from a chat's header menu or from this settings panel.
+
+## Self-destructing messages (message TTL)
+
+Auto-delete can be set per-chat to automatically erase messages after a chosen interval (1 day, 1 week, 1 month). The TTL timer starts from the moment a message is read. Service messages confirm when the auto-delete timer is changed.
+
+Configure auto-delete from the chat header menu: **... → Set Auto-Delete Timer**.
+
+<Note>
+  Auto-delete applies to both sides of the conversation. Once set, all new messages in the chat are deleted after the chosen period regardless of who sent them.
+</Note>
+
+## No-SIM signup and anonymous numbers
+
+Telegram supports signup without a traditional phone number using an anonymous number purchased on [Fragment](https://fragment.com/numbers). Web K fully supports logging in with a Fragment number, and the number appears in your privacy settings like any other phone number.
+
+## Read date privacy
+
+The **Read Dates** setting (`toggleReadDate.tsx`) controls whether other users can see the exact timestamp when you read their messages. Disabling it hides the read date in private chats while still sending the read receipt (double blue tick). This is a Premium feature.
+
+## Account security reference
+
+| Feature | Availability |
+|---------|-------------|
+| Two-factor authentication | All users |
+| Passcode lock (encrypted local storage) | All users |
+| Passkeys (FIDO2/WebAuthn) | All users |
+| Active sessions management | All users |
+| Active web sessions | All users |
+| QR code login | All users |
+| Blocked users | All users |
+| Read date privacy | Premium |
+| Last seen: hide from everyone | Premium |
+| Messages privacy (restrict new chats) | Premium |
+| Secret chats (E2E encrypted) | Not available on web |
+| Telegram Passport | Not available on web |
+
+<Warning>
+  Secret chats use device-specific encryption that cannot be replicated in a browser environment. Secret chats created on mobile devices are not accessible in Web K and cannot be initiated from the web client.
+</Warning>

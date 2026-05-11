@@ -1,133 +1,78 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
-icon: 'star'
+title: "Telegram Web K: Full-Featured Browser Messaging"
+description: "Telegram Web K is an open-source Telegram client for browsers, implementing MTProto v2 with end-to-end encryption, multi-tab support, and the full Telegram feature set."
 ---
 
-## Setting up
+Telegram Web K is the official Telegram web client available at [web.telegram.org/k](https://web.telegram.org/k/). Built with TypeScript and SolidJS, it implements the MTProto v2 protocol directly in the browser — delivering the complete Telegram experience including voice calls, video messages, stickers, file transfers up to 4 GB, and Telegram Premium features — all without installing a native app.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up and run Telegram Web K locally in a few minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    API credentials, environment variables, and build options
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Deployment" icon="server" href="/deployment/local">
+    Deploy locally, with Docker, or to a production web server
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Architecture" icon="sitemap" href="/development/architecture">
+    Understand the multi-worker architecture and key subsystems
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is Telegram Web K?
 
-Everything you need to create world-class documentation.
+Telegram Web K ("K" for the Kotlin-inspired codebase style) is a ground-up rewrite of the original Webogram client. It runs entirely in the browser using:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+- **MTProto v2** — Telegram's binary protocol, implemented in TypeScript with a dedicated crypto Web Worker
+- **Shared Web Worker** — A single network connection shared across all browser tabs, keeping data in sync without redundant API calls
+- **Service Worker** — Background caching, push notifications, and large file streaming
+- **SolidJS** — Fine-grained reactive UI rendering for high-performance updates
+- **rlottie (WASM)** — Animated stickers rendered natively in the browser via WebAssembly
 
-## Make your content agent ready
+## Key features
 
-Make your docs work for humans and AI agents alike.
+<CardGroup cols={2}>
+  <Card title="Messaging" icon="message" href="/features/messaging">
+    Text formatting, replies, threads, scheduled messages, reactions, and message effects
+  </Card>
+  <Card title="Media & Files" icon="photo-film" href="/features/media">
+    Photos, videos, voice messages, files up to 4 GB, and Lottie-animated stickers
+  </Card>
+  <Card title="Calls" icon="phone" href="/features/calls">
+    One-on-one voice and video calls, group calls, and RTMP live stream viewing
+  </Card>
+  <Card title="Privacy & Security" icon="shield" href="/features/privacy">
+    Secret chats, passcode lock, self-destructing messages, and privacy settings
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Prompt component"
-    icon="robot"
-    href="/agent-ready/prompt"
-  >
-    Embed shareable AI prompts readers can copy or open in Cursor.
-  </Card>
-  <Card
-    title="Visibility"
-    icon="eye"
-    href="/agent-ready/visibility"
-  >
-    Show different content to humans and agents reading your docs.
-  </Card>
-  <Card
-    title="Contextual menu"
-    icon="bolt"
-    href="/agent-ready/contextual"
-  >
-    Give readers one-click access to Claude, ChatGPT, Cursor, and more.
-  </Card>
-  <Card
-    title="AI coding tools"
-    icon="wand-magic-sparkles"
-    href="/ai-tools/claude-code"
-  >
-    Set up Claude Code, Cursor, or Windsurf with Mintlify's skill.
-  </Card>
-</Columns>
+## Get started
 
-## Need inspiration?
+<Steps>
+  <Step title="Install dependencies">
+    Clone the repository and install with pnpm:
+    ```bash
+    git clone https://github.com/TelegramOrg/Telegram-web-k.git
+    cd Telegram-web-k
+    pnpm install
+    ```
+  </Step>
+  <Step title="Configure API credentials">
+    Copy the example environment file and add your Telegram API credentials from [my.telegram.org](https://my.telegram.org):
+    ```bash
+    cp .env.local.example .env.local
+    # Edit .env.local with your VITE_API_ID and VITE_API_HASH
+    ```
+  </Step>
+  <Step title="Start the dev server">
+    ```bash
+    pnpm start
+    ```
+    Open [http://localhost:8080](http://localhost:8080) in your browser and sign in with your Telegram account.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  Telegram Web K requires a Telegram API ID and hash. Get yours free at [my.telegram.org](https://my.telegram.org) — registration takes under a minute.
+</Note>

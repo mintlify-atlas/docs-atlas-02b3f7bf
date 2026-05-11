@@ -1,0 +1,149 @@
+---
+title: "Voice and video calls in the Telegram Web K client"
+description: "One-on-one voice and video calls, group voice chats, screen sharing, and RTMP live streams — calling features available in Telegram Web K."
+keywords: ["voice calls", "video calls", "group calls", "screen sharing", "RTMP", "live stream", "WebRTC", "appCallsManager"]
+---
+
+Telegram Web K supports the full range of Telegram's calling features that are technically feasible in a browser environment: encrypted one-on-one voice and video calls, group voice chats with video and screen sharing, scheduled group calls, and RTMP live-stream viewing. Private calls are managed by `appCallsManager`; group calls and voice chats are handled by `appGroupCallsManager`.
+
+<Note>
+  Live location sharing (GPS sending) is not available on the web platform. You can view shared locations from other users, but Web K cannot transmit your device position.
+</Note>
+
+## Starting a one-on-one call
+
+<Steps>
+  <Step title="Open a private chat">
+    Navigate to any private chat with the person you want to call.
+  </Step>
+
+  <Step title="Open the call menu">
+    Click the phone icon in the chat topbar to start a voice call, or click the dropdown arrow next to it to choose **Video call** instead.
+  </Step>
+
+  <Step title="Allow browser permissions">
+    Your browser will prompt for microphone access (and camera access for video calls). Grant permission to proceed. If you accidentally deny it, update the permission in your browser's site settings for `web.telegram.org`.
+  </Step>
+
+  <Step title="Wait for the other party to answer">
+    The call screen displays the recipient's name and avatar while ringing. You can switch between voice and video, mute yourself, or end the call from the in-call controls.
+  </Step>
+</Steps>
+
+## One-on-one call features
+
+| Feature | Status |
+|---------|--------|
+| Voice calls (P2P encrypted) | Supported |
+| Video calls | Supported |
+| Switch camera during call | Supported |
+| Mute / unmute | Supported |
+| Call privacy settings | Supported |
+| P2P call privacy (route through Telegram servers) | Supported |
+| Call settings panel | Not yet available |
+
+<Info>
+  Call privacy settings let you control who can call you (everyone, contacts only, or nobody) and whether peer-to-peer connections are allowed. Configure these in **Settings → Privacy & Security → Calls**.
+</Info>
+
+## Group voice chats
+
+Group voice chats (also called Voice Chats) are available in any group or channel. They appear in the chat as a pinned banner when active, and service messages mark when a group call started or ended.
+
+### Joining a group call
+
+<Steps>
+  <Step title="Find an active voice chat">
+    An active voice chat shows a banner at the top of the group chat. Click **Join** to enter.
+  </Step>
+
+  <Step title="Choose your audio device">
+    Select the microphone you want to use from the device selector in the call panel.
+  </Step>
+
+  <Step title="Interact with participants">
+    The participant list shows who is speaking (indicated by a pulsing ring). Admins can mute individual participants or mute all.
+  </Step>
+</Steps>
+
+### Group call features
+
+| Feature | Status |
+|---------|--------|
+| Group voice chats | Supported |
+| Group video (camera sharing) | Supported |
+| Screen sharing | Supported (see browser notes below) |
+| Participant mute / volume control | Supported |
+| Scheduling a group call | Supported |
+| Group call settings panel | Not yet available |
+
+### Participant management
+
+Admins can:
+- Mute or unmute individual participants.
+- Adjust per-participant volume.
+- Remove participants from the call.
+- Toggle hand-raise requests.
+
+## Screen sharing
+
+Screen sharing uses the browser's `getDisplayMedia` API. Availability depends on the browser and operating system:
+
+```typescript
+// src/environment/screenSharingSupport.ts
+const IS_SCREEN_SHARING_SUPPORTED =
+  !!('getDisplayMedia' in (navigator?.mediaDevices || {}));
+```
+
+| Browser | Screen sharing support |
+|---------|----------------------|
+| Chrome / Edge (desktop) | Full — window, tab, or entire screen |
+| Firefox (desktop) | Full — window or entire screen |
+| Safari | Limited — entire screen only on macOS 13+ |
+| Mobile browsers | Not supported |
+
+When you click **Share Screen** in a group call, the browser presents a native picker to choose what to share. Other participants see your screen as a video feed in the call.
+
+## RTMP live streams
+
+Channels and groups can broadcast via RTMP (for example, using OBS or a hardware encoder). Web K includes a dedicated live-stream viewer:
+
+- A **LIVE** badge appears in the topbar of the channel while a stream is active.
+- Clicking the badge opens the RTMP media viewer (`appMediaViewerRtmp`), which plays the HLS stream in fullscreen.
+- Admins see additional controls to start recording, stop the stream, or select the output audio device.
+- Recording of the stream can be initiated by an admin directly from the viewer.
+
+<Tip>
+  RTMP live-stream links can be distributed to viewers who do not need to be members of the channel, making public broadcasts straightforward.
+</Tip>
+
+## Browser compatibility notes
+
+Web K calls depend on WebRTC, which is well-supported across modern browsers, but there are some caveats:
+
+<AccordionGroup>
+  <Accordion title="Safari">
+    WebRTC is supported on Safari 15+ (macOS and iOS). However, screen sharing is unavailable on iOS Safari due to platform restrictions. Group calls work, but video quality may differ from Chromium-based browsers.
+  </Accordion>
+
+  <Accordion title="Firefox">
+    Full WebRTC support including screen sharing. Note that Firefox does not support tab-only capture in `getDisplayMedia` — you must share a window or the entire screen.
+  </Accordion>
+
+  <Accordion title="Chrome and Edge">
+    Best overall experience. Supports window, tab, and full-screen capture for screen sharing. Tab sharing transmits the tab's audio automatically if you check the option in the browser picker.
+  </Accordion>
+
+  <Accordion title="Mobile browsers">
+    One-on-one voice and video calls work on mobile browsers that support WebRTC. Screen sharing and group call video are generally unavailable on mobile due to `getDisplayMedia` not being exposed to web pages on iOS and Android.
+  </Accordion>
+</AccordionGroup>
+
+## What is not supported
+
+The following call-related features are not yet available in Web K:
+
+- **Conference calls** (multi-party calls with a shareable link) — requires `appCallsManager` extensions not yet implemented.
+- **P2P to conference escalation** — upgrading a private call to a conference.
+- **Shareable call links** for one-on-one calls.
+- **Call settings panel** (ringtone selection, audio device persistence) for private calls.

@@ -1,0 +1,244 @@
+---
+title: "Environment variables and configuration for Telegram Web K"
+description: "Set up environment variables, Telegram API credentials, app config fields, and runtime query parameters to run Telegram Web K in any environment."
+keywords: ["telegram web k", "configuration", "environment variables", "VITE_API_ID", "VITE_API_HASH", "api credentials", "my.telegram.org"]
+---
+
+Telegram Web K is configured through a combination of environment variables loaded by Vite at build time and a small set of URL query parameters parsed at runtime. Environment variables live in `.env` and `.env.local` files at the project root. The `.env` file ships with the repository and contains sensible defaults for local development; `.env.local` is your personal override file and is never committed to version control.
+
+## Getting Telegram API credentials
+
+Every Telegram client — official or third-party — must register an application to receive an API ID and hash. These values identify your client to Telegram's servers and are required before the app will connect.
+
+<Steps>
+  <Step title="Open the Telegram API portal">
+    Go to [my.telegram.org](https://my.telegram.org) and log in with the phone number linked to your Telegram account. Telegram will send a confirmation code to your Telegram app.
+  </Step>
+  <Step title="Create a new application">
+    Navigate to **API development tools** and fill in the form:
+
+    - **App title**: any name (e.g., `My Web K Dev`)
+    - **Short name**: a short identifier (e.g., `mywebk`)
+    - **Platform**: `Web`
+    - **Description**: optional
+
+    Click **Create application**.
+  </Step>
+  <Step title="Copy your credentials">
+    After creation, the page shows your **App api_id** (a number) and **App api_hash** (a hex string). Copy both values — you will need them in the next section.
+  </Step>
+</Steps>
+
+<Warning>
+  Your API ID and hash are tied to your Telegram account. Do not share them publicly or commit them to a public repository. Anyone with your credentials can make API calls on behalf of your registered application.
+</Warning>
+
+## Environment variables
+
+Vite reads `.env` and `.env.local` files at startup. Variables prefixed with `VITE_` are exposed to client-side code via `import.meta.env`. Variables without that prefix are only available during the Vite build process itself.
+
+On first run in development mode, Vite automatically copies `.env.local.example` to `.env.local` if the file does not exist. You can also copy it manually:
+
+```bash
+cp .env.local.example .env.local
+```
+
+Then open `.env.local` and override the variables you need. Values in `.env.local` take precedence over `.env`.
+
+### Core variables
+
+<ParamField path="VITE_API_ID" type="number" required>
+  Your Telegram application's API ID, obtained from [my.telegram.org](https://my.telegram.org). The `.env` file ships with a development credential (`1025907`) that works for local testing, but you should replace it with your own.
+
+  ```bash
+  VITE_API_ID=1025907
+  ```
+</ParamField>
+
+<ParamField path="VITE_API_HASH" type="string" required>
+  Your Telegram application's API hash, obtained from [my.telegram.org](https://my.telegram.org). Paired with `VITE_API_ID` to authenticate your client.
+
+  ```bash
+  VITE_API_HASH=452b0359b988148995f22ff0f4229750
+  ```
+</ParamField>
+
+<ParamField path="VITE_PUSH_SERVER_KEY" type="string">
+  The VAPID public key for Web Push notifications. Required to receive push notifications when the app is in the background. Leave empty to disable push notifications.
+
+  ```bash
+  VITE_PUSH_SERVER_KEY=BB3JzmQIBTl8ZdTmLzhkZVnoYxoSvUmCe1CqqF53u2j0WbEFo2m--mOBagroDFdqMeESfz3ue1Z1e5PTIxMYH_g
+  ```
+</ParamField>
+
+<ParamField path="VITE_VERSION" type="string">
+  The public version string shown in the app's about screen (e.g., `2.2`).
+
+  ```bash
+  VITE_VERSION=2.2
+  ```
+</ParamField>
+
+<ParamField path="VITE_VERSION_FULL" type="string">
+  The full version string including build number (e.g., `2.2 (649)`).
+
+  ```bash
+  VITE_VERSION_FULL=2.2 (649)
+  ```
+</ParamField>
+
+<ParamField path="VITE_BUILD" type="number">
+  The numeric build identifier. Used internally for change detection and cache busting.
+
+  ```bash
+  VITE_BUILD=649
+  ```
+</ParamField>
+
+### MTProto transport variables
+
+These variables control how the MTProto layer establishes connections to Telegram's servers. The defaults in `.env` enable both WebSocket and HTTPS transports with automatic selection.
+
+<ParamField path="VITE_MTPROTO_WORKER" type="boolean (0 or 1)">
+  Run MTProto networking in a dedicated Web Worker. Recommended — keeps network I/O off the main thread.
+
+  ```bash
+  VITE_MTPROTO_WORKER=1
+  ```
+</ParamField>
+
+<ParamField path="VITE_MTPROTO_SW" type="boolean (0 or 1)">
+  Run MTProto inside the Service Worker instead of a Web Worker. Leave empty for the default Worker-based setup.
+
+  ```bash
+  VITE_MTPROTO_SW=
+  ```
+</ParamField>
+
+<ParamField path="VITE_MTPROTO_AUTO" type="boolean (0 or 1)">
+  Enable automatic transport selection. When set alongside `VITE_MTPROTO_HAS_HTTP` and `VITE_MTPROTO_HAS_WS`, the client starts with HTTP and upgrades to WebSocket when available.
+
+  ```bash
+  VITE_MTPROTO_AUTO=1
+  ```
+</ParamField>
+
+<ParamField path="VITE_MTPROTO_HAS_HTTP" type="boolean (0 or 1)">
+  Allow the HTTPS transport for MTProto connections.
+
+  ```bash
+  VITE_MTPROTO_HAS_HTTP=1
+  ```
+</ParamField>
+
+<ParamField path="VITE_MTPROTO_HAS_WS" type="boolean (0 or 1)">
+  Allow the WebSocket transport for MTProto connections.
+
+  ```bash
+  VITE_MTPROTO_HAS_WS=1
+  ```
+</ParamField>
+
+### Example `.env.local`
+
+A minimal override file for development with your own credentials:
+
+```bash
+# .env.local — personal overrides, never committed
+VITE_API_ID=123456
+VITE_API_HASH=abcdef1234567890abcdef1234567890
+```
+
+## App config object
+
+`src/config/app.ts` defines the `App` object that the rest of the codebase imports for runtime constants. Most fields are populated from `import.meta.env` (the Vite environment), but some are computed at startup.
+
+```typescript
+// src/config/app.ts (abridged)
+const threads = Math.min(4, navigator.hardwareConcurrency ?? 4);
+
+const App = {
+  id: +import.meta.env.VITE_API_ID,       // Telegram API ID (number)
+  hash: import.meta.env.VITE_API_HASH,    // Telegram API hash (string)
+  pushServerKey: import.meta.env.VITE_PUSH_SERVER_KEY,
+  version: import.meta.env.VITE_VERSION,
+  domains: ['web.telegram.org', 'webk.telegram.org'],
+  baseDcId: 2,                            // Default data center (DC2)
+  suffix: 'K',                            // Client identifier suffix
+  threads,                                // Capped at 4 or hardwareConcurrency
+  lottieWorkers: threads,                 // Worker threads for rlottie rendering
+  cryptoWorkers: threads,                 // Worker threads for crypto operations
+  interclientBroadcastChannel: 'tgweb'   // BroadcastChannel name for tab sync
+};
+```
+
+### Main domain override
+
+When the app detects it is running on an official Telegram domain (`web.telegram.org` or `webk.telegram.org`), it replaces the API credentials with Telegram's own production keys:
+
+```typescript
+if(App.isMainDomain) {
+  App.id = 2496;
+  App.hash = '8da85b0d5bfe62527e5b244c209159c3';
+  App.pushServerKey = 'BHEbKOXt-...';
+}
+```
+
+This means self-hosted deployments on custom domains always use the credentials from your environment variables.
+
+### Thread counts
+
+`threads`, `lottieWorkers`, and `cryptoWorkers` are all set to `Math.min(4, navigator.hardwareConcurrency ?? 4)`. On a machine with 8+ logical cores this is `4`; on a dual-core machine it is `2`. You cannot override these at runtime — they are computed once at module load.
+
+## Runtime query parameters
+
+These parameters are parsed by `src/config/modes.ts` on every page load. Append them to any URL where the app is running.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `test=1` | flag | off | Connect to Telegram's test data centers. Messages and accounts on test DCs are separate from production. |
+| `debug=1` | flag | off | Enable verbose logging. In development (`IS_BETA`), debug logging is always on regardless of this flag. |
+| `noSharedWorker=1` | flag | off | Disable the Shared Worker. Each tab opens its own network connection — useful for isolating network traffic in DevTools. |
+| `noServiceWorker=1` | flag | off | Disable the Service Worker. Push notifications and file streaming fall back to the main thread. |
+| `http=1` | flag | off | Force the HTTPS transport for MTProto connections (requires `VITE_MTPROTO_HAS_HTTP=1`). |
+| `noMultipleTransports=1` | flag | off | Disable automatic transport switching even when `VITE_MTPROTO_AUTO` is enabled. |
+
+Apply parameters like this:
+
+```
+http://localhost:8080/?test=1&debug=1
+```
+
+<Tip>
+  Use `noSharedWorker=1` together with `debug=1` when debugging MTProto message flow — you get one network tab per browser tab and full console output, making it easy to trace a single request end-to-end.
+</Tip>
+
+## Debug mode behavior
+
+`src/config/debug.ts` exports a `DEBUG` constant and a `MOUNT_CLASS_TO` object:
+
+```typescript
+export const IS_BETA = import.meta.env.DEV;           // true during `pnpm start`
+export const DEBUG = IS_BETA || Modes.debug;           // true in dev or with debug=1
+export const MOUNT_CLASS_TO: any = DEBUG ? window : {};
+```
+
+When `DEBUG` is `true`, internal service classes are attached to `window` (or `self` in workers) via `MOUNT_CLASS_TO`. This lets you inspect live state in the browser console without a debugger breakpoint. For example, after the app loads you can type the class name directly in DevTools to inspect its current state.
+
+Source maps are included in production builds, so you can set breakpoints in the original TypeScript source even on a deployed build.
+
+## SSL configuration
+
+By default the dev server runs over plain HTTP on `localhost:8080`. To run over HTTPS — for example to test Service Worker behavior or push notifications that require a secure context — edit `vite.config.ts`:
+
+```typescript
+// vite.config.ts
+const USE_SSL = true;              // set to true
+const USE_SIGNED_CERTS = true;     // use your own certs from ./certs/
+```
+
+Then generate a certificate for `web.telegram.org`, add `127.0.0.1 web.telegram.org` to `/etc/hosts`, and place the cert files in `./certs/`. The server will start at `https://web.telegram.org/`.
+
+<Note>
+  The `@vitejs/plugin-basic-ssl` plugin is available in `vite.config.ts` for generating self-signed certificates when `USE_SELF_SIGNED_CERTS` is set to `true`. Self-signed certificates work for local testing but will show a browser security warning.
+</Note>

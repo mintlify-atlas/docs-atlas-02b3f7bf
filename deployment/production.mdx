@@ -1,0 +1,153 @@
+---
+title: "Build and deploy Telegram Web K to a production server"
+description: "Compile a minified, source-map-equipped production bundle with pnpm build, then serve it from any static host or the bundled Express server."
+keywords: ["production build", "vite build", "static hosting", "pnpm build", "telegram web k"]
+---
+
+Telegram Web K's production build is a fully static site: HTML, JS, CSS, and WebAssembly assets written to a `public/` directory. Once built, you can serve it from any static host — a CDN, an nginx vhost, GitHub Pages, or the Express server included in the repository.
+
+## Build pipeline
+
+The `build` script chains two steps: changelog generation and a Vite compile.
+
+```bash
+pnpm build
+```
+
+Running this command executes:
+
+1. **`generate-changelog`** — reads commit history and writes `CHANGELOG.md` and `CHANGELOG_ru.md`.
+2. **`vite build`** — bundles the application into the `dist/` directory, then the post-build logic in `build.js` copies the output into `public/`, cleaning up stale files from previous builds.
+
+<Info>
+  Source maps are always included in production builds (`sourcemap: true` in `vite.config.ts`). This is intentional — they make it easier to debug issues reported against the live app without shipping unminified code.
+</Info>
+
+## Full build with version bump
+
+For releases, use `node build` instead of `pnpm build`. This orchestrates a broader pipeline:
+
+<Steps>
+  <Step title="Format the language pack">
+    `node build` starts by running `pnpm run format-lang` to normalize the translation files.
+  </Step>
+
+  <Step title="Apply updated language strings">
+    `pnpm run apply-new-lang` pulls the latest language pack and returns a version number used in the next step.
+  </Step>
+
+  <Step title="Bump the app version">
+    `pnpm run change-version` records the new version and changelog reference in the app source. You can also pass a version and changelog argument explicitly:
+
+    ```bash
+    node build <version> <changelog>
+    ```
+  </Step>
+
+  <Step title="Compile with Vite">
+    `pnpm run build` runs (generate-changelog + vite build), and the compiled files are moved from `dist/` into `public/`.
+  </Step>
+</Steps>
+
+## Deploy to a static host
+
+Copy the contents of `public/` to the document root of any web server:
+
+```bash
+pnpm build
+rsync -av public/ user@yourserver:/var/www/html/
+```
+
+The app works from any path on any origin — set the base URL in your web server config to match wherever you place the files.
+
+<Tip>
+  No server-side rendering or API proxy is needed. All communication with Telegram happens directly from the browser over the MTProto protocol.
+</Tip>
+
+## Serve with the bundled Express server
+
+The repository includes `server.js`, a small Express app that serves `public/` with gzip compression and no caching headers. Use it for quick self-hosted deployments.
+
+```bash
+pnpm serve
+```
+
+`pnpm serve` runs `pnpm build` first and then starts `server.js`. The server listens on port `80` by default.
+
+### Advanced server options
+
+`server.js` accepts positional arguments for finer control:
+
+```bash
+node server.js [tour] [port] [protocol]
+```
+
+| Argument | Values | Description |
+|----------|--------|-------------|
+| `tour` | `3` | Serve from `public3/` on port `8443` instead of `public/` on port `80` |
+| `port` | any number | Override the default port |
+| `protocol` | `https` | Enable HTTPS mode (requires `certs/server-key.pem` and `certs/server-cert.pem`) |
+
+Example — serve on port `3000` over HTTP:
+
+```bash
+node server.js 0 3000
+```
+
+Example — serve on port `443` over HTTPS:
+
+```bash
+node server.js 0 443 https
+```
+
+<Note>
+  For HTTPS mode, place your certificate files at `certs/server-key.pem` and `certs/server-cert.pem` before starting the server.
+</Note>
+
+## Web server configuration tips
+
+Because the app is a single-page application, configure your web server to fall back to `index.html` for any path that does not match a static file.
+
+```nginx
+# nginx example
+server {
+    listen 80;
+    root /var/www/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+Set aggressive caching on versioned assets (filenames include a content hash) and no caching on `index.html`:
+
+```nginx
+location ~* \.(js|css|wasm|woff2)$ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+}
+
+location = /index.html {
+    add_header Cache-Control "no-store";
+}
+```
+
+## Production domain and hardcoded credentials
+
+When the app is served from `web.telegram.org` or `webk.telegram.org`, the `isMainDomain` flag is set to `true` at runtime and the app switches to a fixed set of API credentials regardless of `.env.local`:
+
+```typescript
+if(App.isMainDomain) { // use Webogram credentials then
+  App.id = 2496;
+  App.hash = '8da85b0d5bfe62527e5b244c209159c3';
+  // ...
+}
+```
+
+Self-hosted deployments run on a different hostname, so `isMainDomain` is always `false` and the credentials from `VITE_API_ID` / `VITE_API_HASH` in `.env.local` are used instead.
+
+<Warning>
+  Never serve the app from the `web.telegram.org` domain on your own infrastructure — the hardcoded credentials are associated with the official Telegram deployment. Obtain your own API credentials from [my.telegram.org](https://my.telegram.org) for any custom deployment.
+</Warning>

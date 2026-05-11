@@ -1,0 +1,191 @@
+---
+title: "UI component architecture of Telegram Web K client"
+description: "An overview of how Telegram Web K structures its UI: vanilla TypeScript DOM components alongside reactive SolidJS components, organized by feature area."
+keywords: ["components", "SolidJS", "vanilla TypeScript", "bubbles", "popups", "virtual list", "lazy load", "animation"]
+---
+
+Telegram Web K uses two co-existing rendering models: the majority of the codebase consists of hand-crafted vanilla TypeScript components that manipulate the DOM directly, while newer additions adopt [SolidJS](https://www.solidjs.com/) for fine-grained reactivity. Both models live side by side in `src/components/` — `.ts` files are vanilla TS, `.tsx` files are SolidJS. Understanding which model a file uses is as simple as looking at its extension.
+
+## Rendering models
+
+<Tabs>
+  <Tab title="Vanilla TypeScript (.ts)">
+    The older, dominant pattern. A component is a plain class or function that creates DOM elements imperatively, wires up event listeners, and returns an `HTMLElement`. There is no virtual DOM or diffing — mutations happen directly on real DOM nodes.
+
+    ```typescript
+    // src/components/button.ts
+    export default function Button(className: string, options: ButtonOptions) {
+      const button = document.createElement('button');
+      button.className = 'btn ' + className;
+      // ...attach icons, text, ripple effect
+      return button;
+    }
+    ```
+
+    This approach keeps the bundle lean and gives full control over DOM layout, at the cost of manual memory and lifecycle management.
+  </Tab>
+  <Tab title="SolidJS (.tsx)">
+    Newer components use SolidJS JSX compiled to direct DOM calls — no virtual DOM overhead. Signals and stores provide reactivity. The entry point for a SolidJS custom element is `src/lib/solidjs/defineSolidElement.tsx`.
+
+    ```tsx
+    // src/components/badge.tsx  (example pattern)
+    import {createSignal} from 'solid-js';
+
+    export default function Badge(props: {count: number}) {
+      return <span class="badge">{props.count}</span>;
+    }
+    ```
+
+    SolidJS components integrate with the vanilla layer via wrapper helpers so both can appear in the same DOM tree.
+  </Tab>
+</Tabs>
+
+<Note>
+  When browsing `src/components/`, a `.tsx` extension reliably signals a SolidJS component. Paired files like `checkboxField.ts` and `checkboxFieldTsx.tsx` expose the same widget in both paradigms so legacy code can import the `.ts` version while newer code uses the `.tsx` version.
+</Note>
+
+## Component categories
+
+### Chat area
+
+The chat area under `src/components/chat/` contains the most performance-critical components.
+
+<AccordionGroup>
+  <Accordion title="Message bubbles — src/components/chat/bubbles.ts">
+    `bubbles.ts` is one of the largest files in the project. It manages the full message rendering pipeline: building bubble DOM nodes for text, photos, videos, documents, polls, and service messages; grouping adjacent messages from the same author (`bubbleGroups.ts`); and virtual scrolling to keep the DOM light for long histories.
+
+    Individual bubble parts live in `src/components/chat/bubbles/` (sub-files per content type) and `src/components/chat/bubbleParts/`.
+  </Accordion>
+  <Accordion title="Chat input — src/components/chat/input.ts">
+    Handles the message composition bar: rich text with `contenteditable`, emoji/sticker insertion, voice recording triggers, reply/edit state, and the "send" button context menu. Autocomplete helpers (`autocompleteHelper.ts`, `mentionsHelper.ts`, `commandsHelper.ts`, `emojiHelper.ts`) are injected as collaborators.
+  </Accordion>
+  <Accordion title="Topbar — src/components/chat/topbar.ts">
+    Renders the top strip of a chat: peer title, online status, action buttons (search, call, menu), and pinned-message banners (`pinnedMessage.ts`, `pinnedContainer.ts`). Sponsored-message and live-stream topbars have their own overlay components (`topbarSponsored.tsx`, `topbarLive/`).
+  </Accordion>
+  <Accordion title="Context menu — src/components/chat/contextMenu.ts">
+    Long-press / right-click menu for messages. Builds a dynamic action list (reply, forward, edit, pin, react, select, delete) and positions itself relative to the tapped bubble.
+  </Accordion>
+  <Accordion title="Reactions — src/components/chat/reactions.ts & reaction.ts">
+    `reactions.ts` controls the floating reaction bar and inline reaction counters under messages. `reaction.ts` wraps a single emoji reaction with its animated Lottie sticker, counter, and pressed state. The reactions context menu is in `reactionsMenu.ts`.
+  </Accordion>
+</AccordionGroup>
+
+### Sidebar left
+
+Settings tabs under `src/components/sidebarLeft/tabs/` each extend `SliderSuperTab`, which provides the slide-in/out animation and scrollable container.
+
+| File | Purpose |
+|---|---|
+| `settings.ts` | Root settings screen |
+| `editProfile.ts` | Edit name, bio, username, birthday |
+| `chatFolders.ts` | Folder list and reorder |
+| `editFolder.ts` | Folder rule editor |
+| `generalSettings.ts` | Notifications, privacy links |
+| `background.ts` | Chat wallpaper picker |
+| `language.tsx` | Language switcher (SolidJS) |
+| `notifications.tsx` | Notification settings (SolidJS) |
+| `powerSaving.ts` | Lite mode / animation controls |
+| `stickersAndEmoji.ts` | Sticker and emoji pack manager |
+
+The dialog list itself is driven by `src/components/sortedDialogList.ts` backed by `src/components/dynamicVirtualList/`.
+
+### Sidebar right
+
+`src/components/sidebarRight/` holds peer-info panels. `src/components/peerProfile.tsx` (SolidJS) renders the combined profile view for users, groups, and channels, including bio, shared media tabs, and admin lists.
+
+### Popups
+
+All modal dialogs live under `src/components/popups/`. They extend a common `PopupElement` base class and are shown by calling their static `.show()` method or by instantiating and appending to the document.
+
+```
+src/components/popups/
+├── avatar.ts           # Avatar viewer/editor popup
+├── createPoll.ts       # Poll creation
+├── deleteMessages.ts   # Confirm delete
+├── premium/            # Premium feature gates
+├── boost.ts            # Boost a channel
+├── gift*.tsx           # Star gift flows
+└── ...                 # 30+ additional popups
+```
+
+### Media viewer
+
+`src/components/appMediaViewer.ts` and its siblings (`appMediaViewerBase.ts`, `appMediaViewerNew.ts`, `appMediaViewerAvatar.ts`, `appMediaViewerRtmp.ts`) implement the full-screen photo/video viewer with swipe navigation, zoom, download, and forward actions.
+
+### Media playback
+
+`src/components/appMediaPlaybackController.ts` is a singleton that manages audio/video playback state across the whole app — play queue, speed controls, mini-player, and keyboard shortcuts. The `src/components/audio.ts` component renders the in-chat audio player bubble.
+
+### Emoticons dropdown
+
+`src/components/emoticonsDropdown/` is the emoji, sticker, and GIF picker panel:
+
+```
+emoticonsDropdown/
+├── index.ts        # Panel container, tab switching
+├── search.tsx      # Search input (SolidJS)
+├── tabs/
+│   ├── emoji.ts    # Emoji grid
+│   ├── stickers.ts # Sticker packs
+│   ├── gifs.ts     # GIF grid
+│   └── SuperStickerRenderer.ts
+```
+
+### Call components
+
+Voice and video calls have dedicated directories:
+
+- `src/components/call/` — one-to-one call UI (accept/decline overlay, participant video, mic button)
+- `src/components/groupCall/` — group voice chat UI (participant list, mute icons, stage video tiles)
+
+## Virtual lists and scrolling
+
+Long lists (dialogs, search results, message history) use virtual rendering to avoid thousands of DOM nodes.
+
+| Component | Description |
+|---|---|
+| `src/components/verticalVirtualList.tsx` | Generic SolidJS vertical virtual list |
+| `src/components/deferredSortedVirtualList.tsx` | Virtual list with deferred, sorted inserts for dialog ordering |
+| `src/components/dynamicVirtualList/` | Older imperative virtual list used by the dialog sidebar |
+| `src/components/scrollable.ts` | Custom scrollable container with momentum and intersection tracking |
+
+## Lazy loading
+
+Media thumbnails and Lottie stickers are loaded on demand through a queue system so off-screen content never blocks rendering.
+
+<AccordionGroup>
+  <Accordion title="LazyLoadQueue — src/components/lazyLoadQueue.ts">
+    The primary lazy-load coordinator. Uses an `IntersectionObserver` to track element visibility and processes load tasks only for elements that have been seen. Integrates with `useHeavyAnimationCheck` to pause loading during heavy transition animations.
+  </Accordion>
+  <Accordion title="LazyLoadQueueBase — src/components/lazyLoadQueueBase.ts">
+    Base class with the sequential processing loop and parallelism limit. Extended by the main queue and the repeat queue variants.
+  </Accordion>
+  <Accordion title="LazyLoadQueueRepeat / LazyLoadQueueRepeat2">
+    Variants used for continuously cycling content such as animated sticker panels, where elements need to be re-loaded when they scroll back into view.
+  </Accordion>
+</AccordionGroup>
+
+## Animation infrastructure
+
+<AccordionGroup>
+  <Accordion title="AnimationIntersector — src/components/animationIntersector.ts">
+    A global registry that pauses Lottie, video, and emoji animations when they scroll out of the viewport or when the tab is hidden. Animations are grouped (`chat`, `emoticons-dropdown`, `STICKERS-POPUP`, etc.) so entire groups can be paused at once — for example, pausing all chat animations while a popup is open.
+  </Accordion>
+  <Accordion title="Lottie animations — src/components/lottieAnimation.tsx">
+    A SolidJS wrapper around the rlottie WASM renderer. Accepts a Telegram `Document` or URL and handles decode, play/pause lifecycle, and color replacement for themed stickers. The underlying worker lives in `src/lib/rlottie/`.
+  </Accordion>
+  <Accordion title="Transition system — src/components/transition.ts">
+    CSS class-based show/hide transitions used for panel slides, fade-ins, and the settings slider. `src/components/singleTransition.ts` manages a single in-progress transition at a time.
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Theming" icon="palette" href="/internals/theming">
+    How chat backgrounds, light/dark mode, and peer colors work.
+  </Card>
+  <Card title="Localization" icon="globe" href="/internals/localization">
+    The lang pack system and i18n helper used across every component.
+  </Card>
+</CardGroup>

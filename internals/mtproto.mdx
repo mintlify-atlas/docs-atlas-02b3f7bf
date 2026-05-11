@@ -1,0 +1,205 @@
+---
+title: 'MTProto v2 protocol implementation in Telegram Web K'
+description: 'How Telegram Web K implements MTProto v2: session management, auth key exchange, DC selection, WebSocket and HTTP transports, and the auto-generated TL schema.'
+keywords: ['mtproto', 'networker', 'authorizer', 'dcConfigurator', 'transport', 'websocket', 'telegram protocol']
+---
+
+Telegram Web K speaks exclusively over MTProto v2, Telegram's custom binary protocol. Every API call, file transfer, and server push travels through this stack. Understanding it is essential before making changes to network behavior, adding new API methods, or diagnosing connection problems. The implementation lives under `src/lib/mtproto/` and is used from within the MTProto shared worker, keeping the main thread free of protocol work.
+
+<AccordionGroup>
+
+<Accordion title="Networker — session, encryption, and scheduling">
+
+`src/lib/mtproto/networker.ts` is the core of the MTProto stack. Each `MTPNetworker` instance represents one encrypted session to one data center. The app creates separate networkers for client traffic (RPC calls), file downloads, and file uploads.
+
+**Key responsibilities:**
+
+- **Session management** — On construction, `updateSession()` generates a random 8-byte `sessionId`. The previous session ID is kept for one round-trip to handle server responses that refer to the old session.
+- **Message sequencing** — `seqNo` is incremented for every content-related message. Non-content-related messages (acks, pings) use even sequence numbers.
+- **Message scheduling** — `scheduleRequest()` batches pending messages. If more than 640 KB of data is pending, a container is sent immediately and the remainder is scheduled for the next tick.
+- **Container packing** — When multiple messages are pending, `generateContainerMessage()` wraps them in an `msg_container` (TL constructor `0x73f1f8dc`) to reduce round-trips.
+- **Encryption** — `getEncryptedOutput()` implements MTProto v2 encryption: salt + session ID + message → AES-256-IGE with a derived key from `msg_key`. Decryption in `parseResponse()` verifies the `msg_key` after decryption.
+- **Connection monitoring** — `sendPingDelayDisconnect()` sends a `ping_delay_disconnect` to ask the server to close the connection if no traffic arrives within `disconnectDelay` seconds. This keeps NAT tables alive without a separate ping loop.
+
+```typescript
+// src/lib/mtproto/networker.ts
+const delays = {
+  client: {
+    disconnectDelayMin: 7,
+    disconnectDelayMax: 20,
+    pingInterval: 2000,
+    pingMaxTime: 5,
+    connectionTimeout: 5000
+  },
+  file: {
+    disconnectDelayMin: 10,
+    disconnectDelayMax: 24,
+    pingInterval: 3000,
+    pingMaxTime: 7,
+    connectionTimeout: 7500
+  }
+};
+```
+
+**PFS (Perfect Forward Secrecy)** — When `usingPfs` is true, the networker uses a temporary `authKey` bound to the permanent key via `auth.bindTempAuthKey`. The binding is sent as the first API call of the session.
+
+**HTTP long-polling** — When the WebSocket transport is unavailable, `sendLongPoll()` sends `http_wait` with `max_wait: 25000` ms, which causes the server to hold the connection open until a server-side update is ready.
+
+</Accordion>
+
+<Accordion title="Authorizer — RSA and Diffie-Hellman key exchange">
+
+`src/lib/mtproto/authorizer.ts` implements the full MTProto authorization protocol. It runs once per data center (and once more for temporary keys under PFS). Results are cached in `this.cached` keyed by `${dcId}_${temp}`.
+
+**Authorization flow:**
+
+<Steps>
+  <Step title="req_pq_multi">
+    The client sends a 16-byte random `nonce` in `req_pq_multi`. The server responds with `resPQ`, which includes the server nonce, a composite number `pq`, and server RSA key fingerprints.
+  </Step>
+  <Step title="PQ factorization">
+    The crypto worker factorizes `pq` (via Brent-Pollard) to produce primes `p` and `q`. This is the only computationally expensive step.
+  </Step>
+  <Step title="req_DH_params">
+    The client builds `p_q_inner_data_dc` (or `p_q_inner_data_temp_dc` for temporary keys), encrypts it with the server's RSA public key using a padding scheme specified in the MTProto security guidelines, and sends `req_DH_params`.
+  </Step>
+  <Step title="Server DH parameters">
+    The server replies with `server_DH_params_ok`, containing an AES-encrypted `server_DH_inner_data` with the generator `g`, DH prime, `g_a`, and server time. The client decrypts it and verifies the DH prime against a hard-coded expected value.
+  </Step>
+  <Step title="set_client_DH_params">
+    The client generates random `b`, computes `g_b = g^b mod p` via `mod-pow` in the crypto worker, and sends `set_client_DH_params`. The shared secret is `g_a^b mod p`.
+  </Step>
+  <Step title="Auth key derived">
+    On `dh_gen_ok`, the auth key is SHA1-hashed to produce the 8-byte `auth_key_id`. The server salt is `newNonce[0:8] XOR serverNonce[0:8]`. An `MTAuthKey` object is constructed and returned.
+  </Step>
+</Steps>
+
+```typescript
+// src/lib/mtproto/authorizer.ts — DH prime verification
+if(g !== 3 || dhPrimeHex !== 'c71caeb9c6b1c9048e6c522f70f13f73...') {
+  throw new Error('[MT] DH params are not verified: unknown dhPrime');
+}
+```
+
+<Warning>
+  The DH prime is validated against the exact value from the [MTProto security guidelines](https://core.telegram.org/mtproto/security_guidelines). Any other prime will throw immediately.
+</Warning>
+
+Temporary keys expire after `TEMP_EXPIRATION_TIME = 86400` seconds (24 hours). The Authorizer automatically retries up to three times before propagating the error.
+
+</Accordion>
+
+<Accordion title="DC configurator — data center selection">
+
+`src/lib/mtproto/dcConfigurator.ts` maps `(dcId, connectionType, transportType)` tuples to transport instances, reusing them across calls.
+
+**DC addresses (production):**
+
+| DC | IP address       |
+|----|-----------------|
+| 1  | 149.154.175.50  |
+| 2  | 149.154.167.50  |
+| 3  | 149.154.175.100 |
+| 4  | 149.154.167.91  |
+| 5  | 149.154.171.5   |
+
+**Connection types** — `client` (RPC), `download`, `upload`. Each gets its own transport instance unless `reuse = false`.
+
+**WebSocket URLs** are constructed as `wss://{suffix}ws{dcId}{connectionSuffix}.web.telegram.org/apiws{testSuffix}`. Client connections use no suffix; download/upload connections append `-1` to the host and `/apiws` remains unchanged.
+
+**HTTPS fallback** — When WebSocket is unavailable, SSL subdomains are used: `pluto`, `venus`, `aurora`, `vesta`, `flora` for DC 1–5, hitting `https://{subdomain}.web.telegram.org/apiw1`.
+
+```typescript
+// src/lib/mtproto/dcConfigurator.ts
+public chooseServer(
+  dcId: DcId,
+  connectionType: ConnectionType = 'client',
+  transportType: TransportType = Modes.transport,
+  reuse = true,
+  premium?: boolean
+)
+```
+
+Transport instances are stored in `chosenServers[transportType][connectionType][dcId][]`. Calling `DcConfigurator.removeTransport()` is the safe way to remove a dead connection from the pool without mutating the object while iterating.
+
+</Accordion>
+
+<Accordion title="Transports — WebSocket and HTTP">
+
+All transports live in `src/lib/mtproto/transports/` and implement `MTTransport`.
+
+**WebSocket transport (`tcpObfuscated.ts`, `websocket.ts`)**
+
+`TcpObfuscated` wraps the raw WebSocket with the TCP Obfuscation protocol. On connect it sends a 64-byte random header that tells the server which codec to use. Messages are XOR-obfuscated with a key derived from the header to prevent protocol fingerprinting by network intermediaries.
+
+Available codecs:
+- `abridged.ts` — 1-byte or 4-byte length prefix, simplest format.
+- `intermediate.ts` — 4-byte length prefix, no padding.
+- `padded.ts` — Same as intermediate, plus random padding to defeat traffic analysis.
+
+**HTTP transport (`http.ts`)**
+
+Long-polling over HTTPS. Each `send()` call is a separate `fetch()` POST. The networker controls pacing via `checkLongPoll()` and `sendLongPoll()`, sending `http_wait` to hold the connection up to 25 seconds.
+
+**Transport controller (`controller.ts`)**
+
+`transportController.pingTransports()` is called once at startup (when `VITE_MTPROTO_AUTO` is enabled) to detect whether WebSocket is reachable. The result decides which transport the `Authorizer` uses for the initial key exchange.
+
+**Safari proxy (`socketProxied.ts`)**
+
+On Safari in a Web Worker, `SocketProxied` proxies WebSocket traffic through the main window because Safari workers cannot open WebSockets directly. The proxy uses `postMessage` on a dedicated `MessageChannel`.
+
+</Accordion>
+
+<Accordion title="Time manager — clock synchronization">
+
+`src/lib/mtproto/timeManager.ts` keeps the client clock aligned with the Telegram server.
+
+MTProto message IDs encode the Unix timestamp in the upper 32 bits. If the client clock is more than 30 seconds off, the server rejects messages with `msg_id_too_low` / `msg_id_too_high`. The `TimeManager` corrects for this drift.
+
+```typescript
+// src/lib/mtproto/timeManager.ts
+public applyServerTime(serverTime: number, localTime?: number) {
+  localTime = (localTime || Date.now()) / 1000 | 0;
+  const newTimeOffset = serverTime - localTime;
+  // ...
+  this.timeOffset = newTimeOffset;
+}
+```
+
+`generateId()` produces a monotonically increasing message ID by combining the adjusted Unix time (in seconds) with milliseconds and a 16-bit random value packed into the low 32 bits. If two IDs would be identical, the counter is incremented by 4 instead.
+
+`applyServerTime()` is called during the DH exchange, when the `server_DH_inner_data` message contains the current server time. It is also called when the networker receives a `bad_server_salt` or `bad_msg_notification` with code 16/17.
+
+</Accordion>
+
+<Accordion title="TL schema and layer version">
+
+`src/lib/mtproto/schema.ts` contains the complete auto-generated TL (Type Language) schema as a single JSON object with two namespaces, `MTProto` and `API`. Each entry has a numeric `id` (CRC32 of the type signature), the constructor/method name, its parameters, and the return type.
+
+```typescript
+// src/lib/mtproto/schema.ts
+export default {
+  MTProto: {
+    constructors: MTProtoConstructor[],
+    methods:      MTProtoMethod[],
+  },
+  API: {
+    constructors: MTProtoConstructor[],
+    methods:      MTProtoMethod[],
+  },
+  layer: number   // current API layer version
+};
+```
+
+The `layer` field is passed to the server as the first argument of `invokeWithLayer` on every new connection (`networker.ts:wrapApiCall`). Type-safe layer types are generated into `src/layer.d.ts` by the `generate-mtproto-types` script and are consumed throughout the codebase as `import type {...} from '@layer'`.
+
+<Note>
+  Do not edit `schema.ts` or `layer.d.ts` by hand. These files are generated. Regenerate them with the project's `generate-mtproto-types` build task whenever the TL schema changes.
+</Note>
+
+`tl_utils.ts` provides `TLSerialization` and `TLDeserialization`, the read/write primitives that encode every message using the schema. `gzipPacked` support allows large requests to be compressed before sending.
+
+</Accordion>
+
+</AccordionGroup>

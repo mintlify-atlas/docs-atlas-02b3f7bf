@@ -1,0 +1,229 @@
+---
+title: 'App managers: the business logic layer of Telegram Web K'
+description: 'Domain manager classes, their responsibilities, how createManagers.ts wires them, and how rootScope events and cross-thread proxies connect them to the UI.'
+keywords: ['appManager', 'createManagers', 'rootScope', 'manager pattern', 'appMessagesManager', 'apiUpdatesManager']
+---
+
+Every piece of business logic in Telegram Web K lives in a manager. Managers are plain TypeScript classes that each own a specific domain — messages, chats, users, calls, payments — and communicate with each other and with the UI through a shared dependency-injection container and an event bus called `rootScope`. They run inside the MTProto shared worker, away from the main thread, and are proxied back to the UI where needed.
+
+## Base class
+
+`src/lib/appManagers/manager.ts` defines `AppManager`, the base class that every manager extends. It declares `protected` references to all sibling managers as typed fields:
+
+```typescript
+// src/lib/appManagers/manager.ts
+export class AppManager {
+  protected appMessagesManager: AppMessagesManager;
+  protected appChatsManager: AppChatsManager;
+  protected appUsersManager: AppUsersManager;
+  // ... all other managers
+  protected rootScope: RootScope;
+  protected apiManager: ApiManager;
+  // ...
+
+  public setManagersAndAccountNumber(managers: AppManagers, accountNumber: ActiveAccountNumber) {
+    Object.assign(this, {...managers, accountNumber});
+    this.log = this.createLogger(this.name, this.logTypes);
+  }
+}
+```
+
+`setManagersAndAccountNumber()` is called once during initialization. It bulk-assigns the entire manager map onto `this`, which is why every protected field is available without any explicit injection. After the call the method deletes itself, so it cannot be called again accidentally.
+
+<Note>
+  Managers are account-scoped. Each active account gets its own independent set of manager instances, identified by `accountNumber`. Logger prefixes include the account number (e.g., `ACC-1-messages`).
+</Note>
+
+## Creating managers
+
+`src/lib/appManagers/createManagers.ts` is the factory function. It instantiates every manager, wires them together, and calls each manager's optional `after()` hook in a priority order:
+
+```typescript
+// src/lib/appManagers/createManagers.ts
+export default function createManagers(
+  appStoragesManager: AppStoragesManager,
+  stateManager: AppStateManager,
+  accountNumber: ActiveAccountNumber,
+  userId: UserId
+) {
+  const managers = {
+    appMessagesManager: new AppMessagesManager,
+    appChatsManager: new AppChatsManager,
+    // ... all others
+    authorizer: undefined as Authorizer,
+    dcConfigurator: new DcConfigurator,
+    timeManager: new TimeManager,
+    rootScope: new RootScope,
+    // ...
+  };
+
+  // Authorizer needs dcConfigurator + timeManager, so it's created after
+  managers.authorizer = new Authorizer({
+    timeManager: managers.timeManager,
+    dcConfigurator: managers.dcConfigurator
+  });
+
+  for(const name in managers) {
+    managers[name].setManagersAndAccountNumber(managers, accountNumber);
+  }
+
+  // Priority initialization: users + chats + notifications before everything else
+  // then all managers' after() hooks run in parallel
+  return Promise.all(afterPromises).then(() => {
+    managers.rootScope.dispatchEventSingle('managers_ready');
+    return managers;
+  });
+}
+```
+
+A handful of managers (`appUsersManager`, `appChatsManager`, `appNotificationsManager`, `appMessagesManager`, `dialogsStorage`) are moved to the front of the initialization order because other managers depend on their caches being warm.
+
+## Manager catalog
+
+<AccordionGroup>
+
+<Accordion title="Network and updates">
+
+**`apiManager`** (`apiManager.ts`) — The gateway for all Telegram API calls. Wraps `MTPNetworker` instances with retry logic, DC migration, flood-wait handling, and authentication state management. All API methods ultimately flow through here.
+
+**`apiUpdatesManager`** (`apiUpdatesManager.ts`) — Processes real-time update sequences from the server. Maintains per-peer sequence numbers, buffers out-of-order updates, and dispatches them to the correct domain managers via `rootScope`. If a gap in the sequence is detected, it triggers a `updates.getDifference` to reconcile state.
+
+**`apiFileManager`** (`apiFileManager.ts`) — Manages file downloads and uploads. Uses dedicated download/upload networkers on the correct DC for each file. Handles chunk splitting, resuming interrupted transfers, and caching downloaded blobs.
+
+**`networkerFactory`** (`networkerFactory.ts`) — Creates and reuses `MTPNetworker` instances. Handles DC migration by creating a new networker on the target DC, exporting the auth key with `auth.exportAuthorization`, and importing it on the new DC.
+
+</Accordion>
+
+<Accordion title="Messages and dialogs">
+
+**`appMessagesManager`** (`appMessagesManager.ts`) — The largest manager. Handles sending, editing, deleting, forwarding, and pinning messages. Maintains an in-memory message cache keyed by peer ID and message ID. Processes incoming `updateNewMessage`, `updateEditMessage`, and related updates.
+
+**`appMessagesIdsManager`** (`appMessagesIdsManager.ts`) — Tracks the mapping between global message IDs and per-peer sequential IDs. Provides ID lookup and allocation for local (unsent) messages.
+
+**`appDraftsManager`** (`appDraftsManager.ts`) — Persists and synchronizes message drafts across sessions. Listens for `updateDraftMessage` to stay in sync with other clients.
+
+**`appPeersManager`** (`appPeersManager.ts`) — Resolves a `PeerId` (positive = user, negative = chat/channel) to the appropriate user or chat object. Acts as a unified lookup layer over `appUsersManager` and `appChatsManager`.
+
+**`dialogsStorage`** (`src/lib/storages/dialogs.ts`) — Stores the ordered list of dialogs (conversations). Handles folder membership, unread counts, and pinned position. Used by `appMessagesManager` for the chat list.
+
+</Accordion>
+
+<Accordion title="Peers: users and chats">
+
+**`appUsersManager`** (`appUsersManager.ts`) — Caches `User` objects. Handles contacts, online status, user profile updates, and blocked users. Fires `rootScope` events when a user's name, photo, or status changes.
+
+**`appChatsManager`** (`appChatsManager.ts`) — Caches `Chat` and `Channel` objects. Manages group/channel membership, admin rights, banned rights, and linked channels. Provides helpers to determine what actions the current user can perform in a chat.
+
+**`appProfileManager`** (`appProfileManager.ts`) — Fetches full user and chat profiles (`users.getFullUser`, `channels.getFullChannel`). Caches results and merges them with the base objects in `appUsersManager` / `appChatsManager`.
+
+**`appUsernamesManager`** (`appUsernamesManager.ts`) — Resolves usernames to peer IDs, caching results to avoid redundant `contacts.resolveUsername` calls.
+
+**`appAvatarsManager`** (`appAvatarsManager.ts`) — Coordinates avatar downloads and thumbnail generation, delegating actual file I/O to `apiFileManager`.
+
+</Accordion>
+
+<Accordion title="Media and documents">
+
+**`appDocsManager`** (`appDocsManager.ts`) — Caches `Document` objects (files, audio, video, voice messages, stickers, GIFs). Provides helpers to determine MIME type, file extension, and whether a document can be streamed.
+
+**`appPhotosManager`** (`appPhotosManager.ts`) — Caches `Photo` objects. Selects the best available thumbnail size based on the requested display dimensions.
+
+**`appStickersManager`** (`appStickersManager.ts`) — Manages sticker sets. Loads featured sticker packs, custom emoji sticker sets, and recently used stickers. Persists sticker set data in the `stickerSets` IndexedDB store.
+
+**`appGifsManager`** (`appGifsManager.ts`) — Manages saved GIFs, mirroring the server-side list locally and syncing changes.
+
+**`appEmojiManager`** (`appEmojiManager.ts`) — Handles custom emoji resolution for messages and reactions.
+
+**`appWebPagesManager`** (`appWebPagesManager.ts`) — Caches `WebPage` link preview objects.
+
+**`appWebDocsManager`** (`appWebDocsManager.ts`) — Manages web documents used in inline bot results and mini apps.
+
+</Accordion>
+
+<Accordion title="Social features">
+
+**`appReactionsManager`** (`appReactionsManager.ts`) — Loads available reactions, manages which reactions the user has sent, and processes `updateMessageReactions` updates.
+
+**`appStoriesManager`** (`appStoriesManager.ts`) — Fetches and caches Telegram Stories. Handles the stories expiry logic, story views, and the all-stories feed.
+
+**`appPollsManager`** (`appPollsManager.ts`) — Sends votes, fetches poll results, and processes `updateMessagePoll` updates.
+
+**`appBoostsManager`** (`appBoostsManager.ts`) — Manages channel boosts and boost status.
+
+**`appStatisticsManager`** (`appStatisticsManager.ts`) — Fetches channel and message statistics.
+
+</Accordion>
+
+<Accordion title="Communication: calls and notifications">
+
+**`appCallsManager`** (`appCallsManager.ts`) — Manages one-to-one voice and video calls. Handles call signaling (`phone.requestCall`, `phone.acceptCall`, `phone.discardCall`), ICE candidate exchange, and the E2E encryption handshake using `generateDh` and `computeDhKey`.
+
+**`appGroupCallsManager`** (`appGroupCallsManager.ts`) — Manages group calls and live streams. Coordinates participant lists, audio/video stream negotiation via the WebRTC layer, and group call state updates.
+
+**`appNotificationsManager`** (`appNotificationsManager.ts`) — Controls notification display for messages, calls, and other events. Reads privacy settings to decide whether to show a notification and what to include in it.
+
+**`appPushWebManager`** (referenced via notifications) — Handles Web Push subscriptions (`pushSubscription.endpoint`). Registers and unregisters push tokens with the Telegram servers.
+
+</Accordion>
+
+<Accordion title="Account and settings">
+
+**`appStateManager`** (`appStateManager.ts`) — Manages persisted UI state (current theme, notification settings, privacy settings, cached filters). State is stored in the `session` store of the per-account IndexedDB database.
+
+**`appStoragesManager`** (`appStoragesManager.ts`) — Coordinates all IndexedDB storage instances for an account. Handles initialization, passcode encryption toggling, and storage migration.
+
+**`passwordManager`** (`passwordManager.ts`) — Wraps `account.getPassword`, `account.checkPassword`, and `account.updatePasswordSettings`. Used during login and 2FA setup.
+
+**`appPrivacyManager`** (`appPrivacyManager.ts`) — Fetches and caches privacy rule sets for last seen, phone number, profile photo, and other properties.
+
+**`appAccountManager`** (`appAccountManager.ts`) — Handles multi-account session management, switching between accounts, and authorization state.
+
+**`appLangPackManager`** (`appLangPackManager.ts`) — Downloads and caches the localization string pack from Telegram's CDN. Handles language switching and plural forms.
+
+**`appThemesManager`** (`appThemesManager.ts`) — Fetches available chat themes and applies wallpaper and color settings.
+
+**`appTranslationsManager`** (`appTranslationsManager.ts`) — Sends messages to the `messages.translateText` API and caches results.
+
+</Accordion>
+
+<Accordion title="Bots, payments, and mini apps">
+
+**`appBotsManager`** (`appBotsManager.ts`) — Handles bot command menus, bot info, and sending bot commands.
+
+**`appInlineBotsManager`** (`appInlineBotsManager.ts`) — Manages inline query dispatch and result display for bots that support the `@bot query` inline mode.
+
+**`appAttachMenuBotsManager`** (`appAttachMenuBotsManager.ts`) — Loads the list of bots registered in the attachment menu and mini app launcher.
+
+**`appPaymentsManager`** (`appPaymentsManager.ts`) — Handles the Telegram Payments flow: fetching payment forms, validating shipping info, submitting payment credentials, and processing receipts.
+
+**`appSeamlessLoginManager`** (`appSeamlessLoginManager.ts`) — Generates and manages seamless login tokens for Telegram-connected web apps.
+
+**`appPromoManager`** (`appPromoManager.ts`) — Manages sponsored messages and promotional content shown in large channels.
+
+</Accordion>
+
+</AccordionGroup>
+
+## RootScope event bus
+
+`src/lib/rootScope.ts` exports a singleton `RootScope` instance that managers use to broadcast domain events to the UI and to other managers. It is a typed event emitter — every event name maps to a specific payload type, caught at compile time.
+
+```typescript
+// Dispatching from a manager
+this.rootScope.dispatchEvent('dialog_unread', {peerId, count});
+
+// Listening in a UI component
+rootScope.addEventListener('dialog_unread', ({peerId, count}) => {
+  // update badge
+});
+```
+
+Events are fired synchronously on the dispatching side. Listeners run in the same microtask. The `dispatchEventSingle` variant deduplicates rapid-fire events by coalescing them into one delivery per tick.
+
+## Proxy to the main thread
+
+Managers run in the shared worker. The main window thread accesses them through `getProxiedManagers()`, which wraps each manager in a `Proxy` that serializes method calls as messages to the worker and returns Promises. This means UI code can call `managers.appMessagesManager.sendMessage(...)` and await the result without knowing it crossed a thread boundary.
+
+<Info>
+  Not all manager methods are proxied. Methods that return non-serializable values (DOM objects, streams) must be handled differently. Check `src/lib/appManagers/getProxiedManagers.ts` for the list of exposed methods.
+</Info>

@@ -1,0 +1,130 @@
+---
+title: "Run Telegram Web K locally for development and testing"
+description: "Set up a local development environment for Telegram Web K with Vite hot reload, TypeScript source maps, and debug query parameters."
+keywords: ["local development", "dev server", "pnpm", "vite", "telegram web k"]
+---
+
+Telegram Web K uses Vite under the hood, giving you fast hot module replacement and CSS source maps out of the box. The dev server listens on port `8080` by default and automatically rebuilds on every file change — no manual restarts needed.
+
+## Prerequisites
+
+- **Node.js** 18 or later
+- **pnpm** 9.15.3 or later (`npm install -g pnpm`)
+- A Telegram API ID and API hash — obtain these from [my.telegram.org](https://my.telegram.org)
+
+<Info>
+  pnpm is enforced by a `preinstall` hook. Running `npm install` or `yarn install` directly will fail.
+</Info>
+
+## Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/TelegramOrg/Telegram-web-k.git
+    cd Telegram-web-k
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all JavaScript dependencies with pnpm:
+
+    ```bash
+    pnpm install
+    ```
+
+    This also copies `.env.local.example` to `.env.local` and `src/langPackLocalVersion.example.ts` to `src/langPackLocalVersion.ts` on first run.
+  </Step>
+
+  <Step title="Add your API credentials">
+    Open `.env.local` and fill in your Telegram API credentials:
+
+    ```bash
+    VITE_API_ID=your_api_id
+    VITE_API_HASH=your_api_hash
+    ```
+
+    <Tip>
+      Get your `api_id` and `api_hash` from [my.telegram.org](https://my.telegram.org) under **API development tools**. Each application you register gets its own unique pair.
+    </Tip>
+  </Step>
+
+  <Step title="Start the dev server">
+    ```bash
+    pnpm start
+    ```
+
+    Vite starts with the `--force` flag, bypassing the module cache. Open your browser to one of the URLs below once the server is ready.
+  </Step>
+</Steps>
+
+## Available URLs
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8080/` | Main application entry point |
+| `http://localhost:8080/?test=1` | Connect to Telegram test DCs |
+| `http://localhost:8080/?debug=1` | Enable verbose logging |
+| `http://localhost:8080/?noSharedWorker=1` | Disable Shared Worker (useful when debugging workers) |
+| `http://localhost:8080/?http=1` | Force HTTPS transport to Telegram servers |
+
+Query parameters can be combined: `http://localhost:8080/?test=1&debug=1`
+
+## Debug utilities
+
+The dev build ships with source maps enabled for both JS and CSS (`devSourcemap: true`). Several global helpers are also available in the browser console:
+
+- **`showIconLibrary()`** — renders every SVG icon in the project so you can browse and copy icon names.
+- Classes bound to the global context are accessible by name in developer tools — check the source for the exact identifiers.
+
+## Taking local storage snapshots
+
+The `snapshot-server` mini-app lets you capture and restore the full state of `localStorage` and IndexedDB without touching the main app. This is useful for reproducing bugs or sharing a specific app state.
+
+<Steps>
+  <Step title="Stop the main dev server">
+    The snapshot server must run on the same port as the main app so the browser treats them as the same origin.
+  </Step>
+
+  <Step title="Start the snapshot server">
+    ```bash
+    cd snapshot-server
+    pnpm start --port=8080
+    ```
+  </Step>
+
+  <Step title="Open the snapshot UI">
+    Navigate to `http://localhost:8080` and use the interface to take or load snapshots. Snapshots are saved to `./snapshot-server/snapshots/`.
+  </Step>
+
+  <Step title="Check for active service workers">
+    In Chrome, open `chrome://inspect` and confirm no service workers are running for `localhost`. An active worker can interfere with IndexedDB read/write operations.
+  </Step>
+</Steps>
+
+<Warning>
+  Do not click buttons rapidly in the snapshot UI — storage operations are asynchronous and queuing them can corrupt the snapshot. Wait for the success message before proceeding.
+</Warning>
+
+## SSL setup for the web.telegram.org domain
+
+Some features (such as push notifications) are gated behind the production domain. To test them locally, you can point `web.telegram.org` to `127.0.0.1` and run the dev server over HTTPS with a signed certificate.
+
+```bash
+# Inside the project root
+mkdir certs && cd certs
+mkcert web.telegram.org
+chmod 644 web.telegram.org-key.pem
+```
+
+Add an entry to `/etc/hosts`:
+
+```
+127.0.0.1 web.telegram.org
+```
+
+Then enable SSL in `vite.config.ts` by setting `USE_SSL = true` and `USE_SIGNED_CERTS = true`. The dev server will restart on port `443` and use the certificate files from the `certs/` directory.
+
+<Note>
+  When running on `web.telegram.org` or `webk.telegram.org`, the app automatically switches to hardcoded production API credentials (`App.isMainDomain = true`) regardless of what is set in `.env.local`.
+</Note>

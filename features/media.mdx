@@ -1,0 +1,175 @@
+---
+title: "Media and file sharing in the Telegram Web K client"
+description: "Photos, videos, voice notes, documents up to 4 GB, stickers, GIFs, and paid media — how Telegram Web K handles every media type and playback."
+keywords: ["media", "photos", "videos", "voice messages", "stickers", "GIFs", "file upload", "paid media", "stories", "media viewer"]
+---
+
+Telegram Web K supports the full breadth of Telegram's media types — photos and albums with spoiler blur, videos with covers, round video messages, voice notes, documents up to 4 GB, all three sticker formats, GIFs, paid media behind a Stars paywall, and stories. Media playback is driven by `appMediaViewer` for the fullscreen viewer and `appMediaPlaybackController` for audio and video, while a lazy-load queue keeps performance smooth as you scroll through media-heavy chats.
+
+<Tabs>
+  <Tab title="Photos">
+    **Single photos and albums**
+
+    Photos can be sent individually or grouped into albums of up to 10 items. Albums are displayed as a compact grid inside the message bubble.
+
+    **Spoiler blur**
+
+    Any photo (single or within an album) can be sent with a spoiler effect. The image is blurred with a shimmering overlay until the recipient clicks or taps to reveal it. This is implemented via the `messageMediaPhoto` spoiler flag.
+
+    **Captions**
+
+    Captions support the same rich formatting as regular text messages — bold, italic, links, custom emoji, and more. Captions can optionally appear above the media rather than below.
+
+    **Media editor**
+
+    Before sending, photos pass through the built-in media editor, which provides crop, rotation, brightness/contrast adjustments, a drawing canvas, text overlays, and sticker layers. Rendering uses a WebGL pipeline for smooth performance.
+  </Tab>
+
+  <Tab title="Videos">
+    **Standard videos**
+
+    Videos are displayed inline with a thumbnail cover. Clicking opens the fullscreen media viewer with playback controls, volume slider, and playback-rate selection.
+
+    **Spoiler blur**
+
+    Like photos, videos can be sent with a spoiler effect that blurs the thumbnail and disables autoplay until revealed.
+
+    **Video covers**
+
+    Senders can choose a custom cover frame from the video timeline before sending.
+
+    **Picture-in-Picture**
+
+    Open a video then click the PiP icon (bottom-right of the player) to continue watching while browsing other chats.
+
+    **Round video messages (video notes)**
+
+    Round video messages — circular looping clips of up to 60 seconds — are fully supported for playback. They appear as circular bubbles and play inline.
+
+    **Playback controls**
+
+    The video player includes:
+    - Playback rate (0.5×, 1×, 1.5×, 2×)
+    - Volume with mute toggle
+    - Seek bar with storyboard thumbnails
+    - Fullscreen and PiP modes
+    - HLS streaming for large files
+  </Tab>
+
+  <Tab title="Audio">
+    **Voice messages**
+
+    Voice messages display a waveform visualization and inline play button. Speed can be toggled (1×, 1.5×, 2×). Premium users can request a server-side voice-to-text transcription with a single click.
+
+    **Music and audio files**
+
+    Audio files open in the persistent audio player at the bottom of the screen. Features include repeat-one / repeat-all, shuffle, playlist continuity across chats, and remembered volume and playback speed between sessions.
+
+    **Saved music**
+
+    The Saved Music section aggregates all audio files you have saved, accessible from your profile or the left sidebar.
+  </Tab>
+
+  <Tab title="Documents and files">
+    **Upload limit**
+
+    Files up to **4 GB** can be uploaded and downloaded. This limit applies to all users; Telegram Premium users benefit from faster transfer speeds.
+
+    **Download experience**
+
+    Web K uses a reworked download engine that saturates your connection efficiently. In supported browsers (Chromium-based and Firefox), active downloads appear in the **native browser download bar**, so you can track progress without staying on the page. This is implemented via the streaming download API.
+
+    **File types**
+
+    All file types are accepted. Non-previewable files are shown as document bubbles with the file name, size, and a download button. Common formats (PDF, images, audio) may render an inline preview.
+
+    <Note>
+      Files larger than the browser's memory limit are streamed directly to disk rather than buffered in RAM, avoiding out-of-memory errors on large transfers.
+    </Note>
+  </Tab>
+
+  <Tab title="Stickers and GIFs">
+    **Sticker formats**
+
+    Web K supports all three Telegram sticker formats:
+
+    | Format | Extension | Notes |
+    |--------|-----------|-------|
+    | Static | WebP | Instant display, no animation |
+    | Animated | TGS (Lottie) | JSON-based vector animation |
+    | Video | WebM | Full-motion video stickers |
+
+    <Warning>
+      Video stickers (WebM) are not supported on Safari due to codec limitations. Static and animated TGS stickers work across all browsers.
+    </Warning>
+
+    **Sticker management**
+
+    - Install, remove, and reorder sticker packs from the sticker panel.
+    - Mark individual stickers as favorites.
+    - Recent stickers appear at the top of the panel.
+    - Sticker suggestions appear inline while typing emoji.
+
+    **Premium stickers**
+
+    Premium stickers play a fullscreen animation when sent to another Premium user. Custom emoji packs are also available to Premium subscribers and render inline in text.
+
+    **GIFs**
+
+    Search for GIFs via inline bots (`@gif` by default). Saved GIFs are accessible from the attachment panel and are synced across devices.
+
+    **Interactive emoji**
+
+    Single-emoji messages trigger a large animated version of the emoji with a fullscreen effect when both participants are looking at the chat simultaneously.
+  </Tab>
+</Tabs>
+
+## Media viewer
+
+The fullscreen media viewer (`appMediaViewer`) opens when you click any photo or video in a chat. It provides:
+
+- Swipe or arrow-key navigation through the current album or chat history.
+- Zoom and pan for photos.
+- Full playback controls for videos.
+- A download button for saving to disk.
+- Forwarding and sharing directly from the viewer.
+
+A dedicated RTMP media viewer (`appMediaViewerRtmp`) handles live-stream viewing within the same UI shell.
+
+## Stories
+
+<AccordionGroup>
+  <Accordion title="Viewing stories">
+    Stories from contacts and channels you follow appear in a horizontal scrollable bar at the top of the chat list (`list.tsx`). Clicking a story opens the fullscreen story viewer (`viewer.tsx`), which advances through stories automatically.
+
+    Stories support reactions, replies, and forwarding. The viewer shows a progress bar for each story in a user's sequence.
+  </Accordion>
+
+  <Accordion title="Profile stories">
+    Visiting a user's or channel's profile shows their pinned and archived stories in a dedicated `profileList.tsx` section. Pinned stories remain visible indefinitely; archived stories are accessible to the owner.
+  </Accordion>
+
+  <Accordion title="Stealth mode">
+    Premium users can activate Stealth Mode from the story viewer to prevent their view from being recorded in the story's view list for a short window. This is managed by `storiesStealthMode.tsx`.
+  </Accordion>
+
+  <Accordion title="Story privacy">
+    Story privacy settings control who can see each story — all contacts, selected contacts, or close friends. These settings are configurable per-story before posting.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Posting new stories is not supported in Web K. The story viewer is fully functional for reading stories from your contacts and channels.
+</Note>
+
+## Paid media
+
+Posts marked as paid media (`messageMediaPaidMedia`) display a Stars paywall overlay. Clicking **Unlock** deducts the required number of Stars from your balance and reveals the underlying photo or video. The Stars balance is shown as a floating indicator updated in real time.
+
+## Giveaway posts
+
+Giveaway messages (`messageMediaGiveaway` and `messageMediaGiveawayResults`) render with the full giveaway card UI, including prize description, end date, eligible channels, and country filters. Results posts show the winner list.
+
+## Lazy-load queue
+
+Web K uses a virtual list and a priority-based lazy-load queue for media in the message list. Thumbnails closest to the viewport are fetched first; off-screen media is deferred. This keeps scroll performance smooth even in media-heavy channels with thousands of messages loaded.

@@ -1,0 +1,136 @@
+---
+title: "Deploy Telegram Web K with Docker and docker-compose"
+description: "Run Telegram Web K in Docker for local development, or build and serve a production nginx image using the included docker-compose services."
+keywords: ["docker", "docker-compose", "nginx", "container", "telegram web k"]
+---
+
+The repository ships three Dockerfiles inside the `.docker/` directory — one for resolving dependencies, one for the development server, and one multi-stage build that produces a lean nginx image ready for production. All three are wired together in `docker-compose.yaml`, so you can switch between workflows with a single command.
+
+<Tabs>
+  <Tab title="Development">
+    The development workflow uses two services: `tweb.dependencies` installs node modules into a named volume that `tweb.develop` then mounts, avoiding a full `pnpm install` on every container restart.
+
+    <Steps>
+      <Step title="Install dependencies">
+        Run the dependencies service to populate the `node_modules` volume:
+
+        ```bash
+        docker-compose up tweb.dependencies
+        ```
+
+        This builds `Dockerfile_dependencies` (Node 18 base), installs pnpm globally, and runs `pnpm install`. The `node_modules` folder is written to the `./node_modules` bind mount on your host.
+      </Step>
+
+      <Step title="Start the development container">
+        ```bash
+        docker-compose up tweb.develop
+        ```
+
+        The `tweb.develop` service mounts your entire project directory into `/app` inside the container, then starts Vite with:
+
+        ```bash
+        pnpm start-in-docker
+        ```
+
+        `start-in-docker` is identical to `pnpm start` but passes `--host` so Vite binds to `0.0.0.0` instead of `localhost`, making it reachable outside the container.
+      </Step>
+
+      <Step title="Open the app">
+        Navigate to [http://localhost:8080](http://localhost:8080) in your browser.
+
+        Because your source files are bind-mounted, edits on the host trigger Vite's hot module replacement inside the container with no restart required.
+      </Step>
+    </Steps>
+
+    **Port mapping:** `8080 → 8080`
+
+    **Volume mounts:**
+    - `./node_modules` → `/app/node_modules` (dependencies service)
+    - `./` → `/app` (develop service — full project)
+
+    <Info>
+      Run the dependencies service again whenever you add or update packages in `package.json`. The develop service does not run `pnpm install` on its own.
+    </Info>
+  </Tab>
+
+  <Tab title="Production">
+    The production workflow builds a self-contained nginx image. No bind mounts are used — the final image includes the compiled `public/` output and nothing else from the build environment.
+
+    <Steps>
+      <Step title="Start the production service">
+        ```bash
+        docker-compose up tweb.production -d
+        ```
+
+        Docker builds `Dockerfile_production`, which:
+
+        1. Starts from `node:18`
+        2. Copies the full project source
+        3. Installs pnpm and runs `pnpm install` followed by `pnpm install --production`
+        4. Runs `node build` to compile the app into `public/`
+        5. Switches to an `nginx:stable-alpine3.20-slim` base and copies `public/` to `/usr/share/nginx/html`
+
+        The final image is a minimal Alpine nginx image — the Node.js layer is discarded.
+      </Step>
+
+      <Step title="Open the app">
+        Navigate to [http://localhost:80](http://localhost:80) in your browser.
+      </Step>
+    </Steps>
+
+    **Port mapping:** `80 → 80`
+
+    **No volume mounts** — the build output is baked into the image at build time.
+
+    <Tip>
+      To publish your own production image to Docker Hub, use the direct build command instead of docker-compose:
+
+      ```bash
+      docker build \
+        -f ./.docker/Dockerfile_production \
+        -t {dockerhub-username}/{imageName}:{latest} \
+        .
+      ```
+
+      Replace `{dockerhub-username}`, `{imageName}`, and `{latest}` with your own values before running.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## docker-compose.yaml reference
+
+```yaml
+version: "3.8"
+services:
+  tweb.dependencies:
+    container_name: tweb.dependencies
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile_dependencies
+    volumes:
+      - "./node_modules:/app/node_modules"
+    command: pnpm install
+
+  tweb.develop:
+    container_name: tweb.develop
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile_develop
+    volumes:
+      - "./:/app"
+    ports:
+      - 8080:8080
+    command: pnpm start-in-docker
+
+  tweb.production:
+    container_name: tweb.production
+    build:
+      context: .
+      dockerfile: .docker/Dockerfile_production
+    ports:
+      - 80:80
+```
+
+<Warning>
+  The production Dockerfile copies the entire project context, including any `.env.local` file present on disk. Make sure your `.env.local` does not contain secrets you do not want baked into a public image before building.
+</Warning>

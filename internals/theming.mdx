@@ -1,0 +1,176 @@
+---
+title: "Chat themes and visual appearance in Telegram Web K"
+description: "How Telegram Web K handles light/dark mode, Telegram server themes, chat background wallpapers, peer accent colors, and the SCSS design system."
+keywords: ["theming", "dark mode", "wallpaper", "chat background", "CSS custom properties", "themeController", "peer colors", "SCSS"]
+---
+
+Appearance in Telegram Web K is controlled by a layered system: a global day/night mode, per-theme accent color overrides, a flexible chat background engine that handles solid colors, gradients, and tiled patterns, and per-peer accent colors that give each contact a distinct visual identity. All of these ultimately write to CSS custom properties on `document.documentElement`, so the entire UI reacts instantly without re-renders.
+
+## ThemeController
+
+`src/helpers/themeController.ts` is the central authority for active theme state. It is exported as the singleton `themeController` and is accessible globally via `MOUNT_CLASS_TO.themeController` in debug builds.
+
+### Day and night mode
+
+The controller listens to the OS `prefers-color-scheme` media query through `setThemeListener()` and stores the result as `systemTheme`. When the user switches manually, `switchTheme()` writes the preference to app settings and dispatches a `theme_change` event.
+
+```typescript
+// src/helpers/themeController.ts
+public async switchTheme(
+  name: AppTheme['name'] = this.isNight() ? 'day' : 'night',
+  coordinates?: {x: number, y: number}
+) {
+  const [, setAppSettings] = useAppSettings();
+  await setAppSettings('theme', name);
+  rootScope.dispatchEvent('theme_change', coordinates);
+}
+```
+
+When `coordinates` is provided (e.g., the position of the toggle button) and the browser supports the View Transitions API, the switch plays a circular-reveal animation expanding from that point.
+
+### Color maps
+
+Two built-in palettes — `day` and `night` — define the baseline hex values for every semantic color token:
+
+| Token | Day | Night |
+|---|---|---|
+| `primary-color` | `#3390ec` | `#8774E1` |
+| `message-out-background-color` | light green | purple-tinted |
+| `surface-color` | `#ffffff` | `#212121` |
+| `danger-color` | `#df3f40` | `#ff595a` |
+| `primary-text-color` | `#000000` | `#ffffff` |
+| `secondary-text-color` | `#707579` | `#aaaaaa` |
+
+Each token expands into multiple CSS custom properties. For example, `primary-color` also produces `--primary-color-rgb`, `--light-primary-color`, `--light-filled-primary-color`, and `--dark-primary-color`. This is controlled by the `appColorMap` descriptor per token.
+
+### Applying a theme from Telegram servers
+
+Telegram supports downloadable themes that override the accent and message colors. `applyNewTheme()` fetches the wallpaper and color settings from a `Theme` object returned by the API and blends them with the baseline palette using HSV color math, ensuring contrast is maintained regardless of the chosen accent.
+
+```typescript
+// Simplified excerpt — src/helpers/themeController.ts
+public applyTheme(theme: Theme | AppTheme, element = document.documentElement) {
+  // Compute new accent from theme's accent_color
+  const newAccentRgb = changeColorAccent(hsvTemp1, hsvTemp2, hexToRgb(baseColors['primary-color']), !isNight);
+  applyAppColor({name: 'primary-color', hex: rgbaToHexa(newAccentRgb)});
+  // Compute outgoing message background from theme's message_colors
+  applyAppColor({name: 'message-out-background-color', hex: ...});
+}
+```
+
+### Theme params for Web Apps
+
+`getThemeParamsForWebView()` maps internal CSS variables to the `TelegramWebViewTheme` schema so that Mini Apps receive matching colors when the user switches themes.
+
+## Chat backgrounds
+
+### Background tab — src/components/sidebarLeft/tabs/background.ts
+
+`AppBackgroundTab` extends `SliderSuperTab` and presents the wallpaper picker. It fetches available wallpapers from `appThemesManager.getWallPapers()` and displays them in a grid. Three top-level buttons let the user:
+
+1. **Upload** — pick a local image file via `requestFile()`, scale it with `scaleMediaElement()`, and set it as the wallpaper.
+2. **Set color** — open `AppBackgroundColorTab` (`backgroundColor.ts`) to choose a solid or gradient background.
+3. **Reset** — restore the default wallpaper.
+
+A blur checkbox toggles `WallPaper.settings.blur` and immediately re-renders the active background.
+
+```typescript
+// src/components/sidebarLeft/tabs/background.ts
+public static getInitArgs() {
+  return {
+    backgrounds: rootScope.managers.appThemesManager.getWallPapers()
+  };
+}
+```
+
+### Gradient renderer — src/components/chat/gradientRenderer.ts
+
+`ChatBackgroundGradientRenderer` handles multi-stop color gradient backgrounds. It interpolates between up to four colors from the wallpaper's `settings` using a moving gradient animation, drawing frames to a `<canvas>` element that sits behind the message list.
+
+### Pattern renderer — src/components/chat/patternRenderer.ts
+
+Pattern backgrounds tile a semi-transparent SVG or image over the gradient layer. The renderer composites the pattern with the gradient colors and respects the `intensity` setting from the wallpaper object. It runs on a `<canvas>` and is hardware-accelerated.
+
+<Tip>
+  The `DEFAULT_BACKGROUND_SLUG` constant in `src/config/app.ts` is set to `'pattern'`, meaning new accounts start with the default Telegram pattern background.
+</Tip>
+
+## SCSS architecture
+
+Styles are split across `src/scss/` and imported through `src/materialize.scss`.
+
+```
+src/scss/
+├── variables.scss      # Breakpoints, border radii, spacing constants
+├── mixins.scss         # SCSS mixin entry point
+├── mixins/             # Individual mixin files
+├── functions.scss      # SCSS utility functions
+├── base.scss           # Base reset and global rules
+├── fonts.scss          # @font-face declarations
+├── fonts/              # Bundled font files
+├── tgico.scss          # Icon font (tgico) declarations
+├── tgico/              # Icon font glyph map
+├── shared.scss         # Shared utility classes
+├── style.scss          # Main style entry point
+├── partials/           # Per-feature partials
+└── components/         # Per-component SCSS modules
+```
+
+Key variables defined in `src/scss/variables.scss`:
+
+```scss
+$small-screen:   600px;
+$medium-screen:  1275px;
+$large-screen:   1680px;
+
+$floating-left-sidebar: 925px;   // sidebar becomes overlay below this
+$messages-container-width: 728px;
+
+$chat-input-size: 3.375rem;
+$border-radius:   8px;
+```
+
+Component-scoped styles use CSS Modules (`.module.scss` files). Global styles live in the `src/scss/partials/` and `src/scss/components/` directories.
+
+### CSS custom properties
+
+All semantic colors are surfaced as CSS custom properties (e.g., `--primary-color`, `--surface-color`, `--message-out-background-color`). `themeController.applyAppColor()` writes these directly to `document.documentElement.style`. SCSS only hard-codes structural values like spacing and radii; color always comes from `var(--token-name)`.
+
+## Peer colors
+
+Every Telegram user and channel has an accent color used for name labels, reply headers, and mention highlights. `src/components/peerColors.ts` provides `setPeerColorToElement()` which resolves the correct CSS variable for a given peer.
+
+There are two color modes:
+
+- **Index-based** — seven predefined color indices (`--peer-0-color-rgb` … `--peer-6-color-rgb`) assigned by Telegram based on the peer's ID.
+- **Collectible** — Premium users can choose custom colors or gradient sets (`peerColorCollectible`). These include optional dark-mode variants and are applied as gradients via `--peer-border-background`.
+
+```typescript
+// src/components/peerColors.ts
+const colorIndex = (color as PeerColor.peerColor)?.color ?? getPeerColorIndexByPeer(peer);
+element.style.setProperty('--peer-color-rgb', `var(--peer-${colorIndex}-color-rgb)`);
+```
+
+## Power saving mode
+
+`src/components/sidebarLeft/tabs/powerSaving.ts` exposes the **Lite Mode** settings panel (`LiteMode.Title`). Users can individually toggle:
+
+- Video autoplay
+- GIF autoplay
+- Sticker animations (panel and chat)
+- Effect animations (reactions, premium stickers, emoji)
+- Chat background animation and spoiler effects
+- General UI animations
+
+The `liteMode` helper (`src/helpers/liteMode.ts`) is queried throughout the codebase via `liteMode.isAvailable('key')` before starting any animation or effect, so disabling a category has immediate global effect without requiring a reload.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="UI components" icon="layout-grid" href="/internals/components">
+    The full component catalogue, rendering models, and animation infrastructure.
+  </Card>
+  <Card title="Localization" icon="globe" href="/internals/localization">
+    How language packs are fetched, cached, and applied across the UI.
+  </Card>
+</CardGroup>

@@ -1,0 +1,197 @@
+---
+title: "Localization and language pack system in Telegram Web K"
+description: "How Telegram Web K downloads, caches, and applies language packs from Telegram servers, with compile-time key safety, plural rules, and auto-translate."
+keywords: ["localization", "i18n", "lang pack", "language", "translation", "plural", "LangPackKey", "langPack"]
+---
+
+Telegram Web K uses Telegram's own lang pack infrastructure for every user-visible string. Rather than bundling translated strings at build time, the app downloads the active language pack from Telegram's servers on first load, caches it locally, and applies it live — meaning language changes take effect without a page reload. TypeScript type definitions cover every translatable key, giving compile-time safety against typos.
+
+## The lang pack system
+
+### App identity
+
+The app identifies itself to Telegram's lang pack API using two constants in `src/config/app.ts`:
+
+```typescript
+// src/config/app.ts
+const App = {
+  langPack: 'webk',    // tells the server which string set to serve
+  langPackCode: 'en',  // default language code before user preference loads
+};
+```
+
+When fetching translations for a non-web lang pack (e.g., Android strings for certain action messages), the app also requests the `'android'` pack and merges the results.
+
+### AppLangPackManager — src/lib/appManagers/appLangPackManager.ts
+
+`AppLangPackManager` is the thin API layer for lang pack network calls. It wraps four MTProto methods:
+
+| Method | API call |
+|---|---|
+| `getLangPack(langCode, langPack)` | `langpack.getLangPack` |
+| `getCountriesList(langCode)` | `help.getCountriesList` |
+| `getStrings(langCode, keys)` | `langpack.getStrings` |
+| `getDifference(langCode, fromVersion)` | `langpack.getDifference` |
+
+It also forwards server push updates (`updateLangPack`, `updateLangPackTooLong`) to `rootScope` so the app can refresh strings when Telegram publishes a new lang pack version.
+
+### I18n namespace — src/lib/langPack.ts
+
+Most of the localization logic lives in the `I18n` namespace exported from `src/lib/langPack.ts`. Key responsibilities:
+
+<AccordionGroup>
+  <Accordion title="Loading and caching">
+    `getCacheLangPackAndApply()` is called on startup. It reads from `commonStateStorage` (IndexedDB) first; if nothing is cached, it falls back to `loadLocalLangPack()` which imports `src/lang.ts` and `src/langSign.ts` (the bundled English fallback strings) synchronously.
+
+    Once the user is authenticated, `getLangPackAndApply(langCode)` fetches fresh strings from the server, merges them with the local fallback, and persists the result.
+
+    ```typescript
+    // src/lib/langPack.ts
+    export function getLangPackAndApply(langCode: string, web?: boolean) {
+      return loadLangPack(langCode, web).then(([langPack1, langPack2, local1, local2, countries]) => {
+        // merge server strings over local fallback
+        langPack1.strings = localStrings.concat(...[langPack1.strings, langPack2?.strings].filter(Boolean));
+        return saveLangPack(langPack1, true); // persist and apply
+      });
+    }
+    ```
+  </Accordion>
+  <Accordion title="Applying strings to the DOM">
+    `applyLangPack()` populates an in-memory `Map<LangPackKey, LangPackString>`. Every element on the page with class `i18n` is then visited and its bound `I18n` instance calls `update()` to re-render its string. This means language changes are applied to the live DOM without unmounting any components.
+  </Accordion>
+  <Accordion title="RTL support">
+    `setRTL(true)` is called for right-to-left languages (Arabic, Hebrew, Farsi). The direction flag propagates through `setDirection()` calls on relevant DOM containers.
+  </Accordion>
+</AccordionGroup>
+
+## TypeScript type safety — src/lang.ts
+
+`src/lang.ts` is a large TypeScript object literal (4 500+ entries) that serves as the canonical list of every translatable string key for English. Its type is inferred at compile time and re-exported as `LangPackKey`:
+
+```typescript
+// src/lib/langPack.ts
+export type LangPackKey = keyof typeof lang | keyof typeof langSign;
+```
+
+Passing an unknown string to `i18n()` or `I18n.format()` is a TypeScript error. This catches missing or renamed keys during development, before any network calls are made.
+
+Plural strings are declared as objects with `one_value` / `other_value` (and additional CLDR plural category keys as needed):
+
+```typescript
+// src/lang.ts
+'Chat.Search.MessagesFound': {
+  one_value:   '%d message found',
+  other_value: '%d messages found'
+}
+```
+
+## Using i18n in components
+
+### The `i18n` function
+
+The most common call site is the `i18n` helper re-exported from `src/lib/langPack.ts`:
+
+```typescript
+import {i18n} from '@lib/langPack';
+
+// Simple key
+const label = i18n('Cancel');  // returns a Text or Element node
+
+// Key with positional argument
+const msg = i18n('Chat.Search.MessagesFound', [42]);
+
+// Key with a named parameter using %s substitution
+const text = i18n('SharedFolder.Includes', ['My Folder']);
+```
+
+`i18n()` returns either a raw `Text` node (for plain strings) or an `HTMLElement` (when the string contains bold markers `**…**`, underscores `__…__`, newlines `\n`, or inline links `[text](url)`). The `superFormatter()` function handles this parsing.
+
+### Reactive i18n in SolidJS components
+
+SolidJS components can subscribe to language changes through `I18n.langCodeNormalized`, a SolidJS signal that updates whenever the language changes:
+
+```tsx
+import I18n from '@lib/langPack';
+import {createMemo} from 'solid-js';
+
+// Inside a component:
+const currentLang = createMemo(() => I18n.langCodeNormalized());
+```
+
+## Plural handling
+
+Plural rules are powered by the standard `Intl.PluralRules` API. A polyfill ships at `src/lib/pluralPolyfill.ts` for environments that lack native support. After a lang pack is applied, a `PluralRules` instance is created for the active locale:
+
+```typescript
+// src/lib/langPack.ts
+pluralRules = new Intl.PluralRules(lastRequestedNormalizedLangCode);
+```
+
+When formatting a pluralized key, `I18n.format()` calls `pluralRules.select(count)` to pick the right CLDR category (`one`, `few`, `many`, `other`, etc.) and then substitutes the count via `%d`.
+
+## Language selection UI — src/components/sidebarLeft/tabs/language.tsx
+
+`AppLanguageTab` is a SolidJS component (`language.tsx`) that presents:
+
+1. **Translate messages section** — toggle to show a "Translate" button in chats; a "Do not translate" multi-select for languages the user already reads.
+2. **Language radio list** — fetched from `langpack.getLanguages({lang_pack: 'web'})`, showing each language's native name as the subtitle. Selecting a row calls `I18n.getLangPackAndApply(value)`.
+
+```typescript
+// src/components/sidebarLeft/tabs/language.tsx
+const form = RadioFormFromRows([...radioRows.values()], (value) => {
+  I18n.getLangPackAndApply(value, webLangCodes.includes(value));
+});
+```
+
+The current language is marked by silently setting the matching radio button to checked after the cached lang pack resolves.
+
+## Language change button
+
+`src/components/languageChangeButton.ts` renders a standalone button used on the sign-in screen and other pre-auth pages to switch the UI language before the user is logged in.
+
+## Auto-translate and language detection
+
+Telegram Web K supports automatic message translation for Premium users. Language detection for incoming messages is handled by `src/helpers/detectLanguageForTranslation.ts`, which delegates to a Web Worker running a bundled copy of the [tinyld](https://github.com/komodojp/tinyld) language detection library:
+
+```
+src/lib/tinyld/
+├── detect.ts         # Main-thread API: detectLanguageForTranslation()
+└── tinyld.worker.ts  # Worker: runs tinyld model inference off the main thread
+```
+
+The detected language is compared against the user's "Do not translate" list (stored in `appSettings.translations.doNotTranslate`) to decide whether to offer a translate button. The translation UI itself is in `src/components/chat/translation.tsx`.
+
+## Latin/Cyrillic transliteration for search
+
+`src/config/latinizeMap.ts` contains a full Unicode-to-ASCII character map (based on the `latenize` project). It is used in dialog search to match, for example, `"Ü"` against a query of `"U"`, enabling cross-script fuzzy search without a dedicated full-text index.
+
+## Development scripts
+
+Three Node.js scripts assist with lang pack development:
+
+<Steps>
+  <Step title="watch-lang.js — hot-reload on string changes">
+    Run with `pnpm watch-lang`. The script watches `src/lang.ts` and `src/langSign.ts` for changes and automatically increments the `langPackLocalVersion` constant in `src/langPackLocalVersion.ts`, which triggers the dev server to reload and re-apply the local strings without a full page refresh.
+  </Step>
+  <Step title="apply-new-lang — import upstream strings">
+    Run with `pnpm apply-new-lang`. Fetches the latest strings from a Telegram server response and merges them into the local lang files, preserving any Web K-specific overrides.
+  </Step>
+  <Step title="format-lang — normalise key order">
+    Run with `pnpm format-lang`. Sorts and reformats the entries in `src/lang.ts` to keep diffs readable.
+  </Step>
+</Steps>
+
+<Note>
+  The `langPackLocalVersion` number is checked against the server version on startup. If the local version is newer than what is cached in IndexedDB, the local strings are used — allowing development builds to test new keys before they ship to the server.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="UI components" icon="layout-grid" href="/internals/components">
+    How components consume i18n strings via vanilla TS and SolidJS patterns.
+  </Card>
+  <Card title="Theming" icon="palette" href="/internals/theming">
+    Chat backgrounds, light/dark mode, and the SCSS design system.
+  </Card>
+</CardGroup>

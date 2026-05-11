@@ -1,0 +1,180 @@
+---
+title: 'Storage layers and data persistence in Telegram Web K'
+description: 'IndexedDB, localStorage, and an AES-CTR encrypted overlay for passcode lock — how Telegram Web K persists and secures structured application state.'
+keywords: ['IndexedDB', 'storage', 'encrypted storage', 'passcode', 'sessionStorage', 'stateStorage', 'AppStorage']
+---
+
+Telegram Web K uses three distinct storage backends, each chosen for its access pattern. IndexedDB holds the bulk of application data (messages, users, chats, sticker sets) because it can store large structured objects with async access from workers. The browser's `localStorage` holds small, synchronously-readable settings and session tokens. A dedicated encrypted layer sits on top of both when the passcode lock is active, transparently re-encrypting and decrypting data with AES-CTR so that sensitive data at rest is protected. Understanding this layering is important whenever you add new persisted state or need to reason about what survives a page reload.
+
+## Storage tiers at a glance
+
+<CardGroup cols={3}>
+  <Card title="IndexedDB (AppStorage)" icon="database">
+    Messages, users, chats, dialogs, sticker sets, and all other structured app data. Accessed asynchronously, always from the shared worker. Can be encrypted per-store when the passcode is active.
+  </Card>
+  <Card title="localStorage (LocalStorageController)" icon="hard-drive">
+    Session tokens, DC auth keys, UI preferences, and account metadata. Synchronous reads from the main thread; writes proxied to the worker.
+  </Card>
+  <Card title="Encrypted overlay (EncryptedStorageLayer)" icon="lock">
+    An AES-CTR encryption wrapper that replaces the plain IDB store for any store that has an `encryptedName`. Transparent to callers — same `save`/`get`/`delete` API.
+  </Card>
+</CardGroup>
+
+## AppStorage — the IndexedDB abstraction
+
+`src/lib/storage.ts` exports `AppStorage<Storage, T>`, a generic class that wraps an IndexedDB object store behind a simple typed cache.
+
+**Construction:**
+
+```typescript
+// src/lib/storage.ts
+class AppStorage<Storage extends Record<string, any>, T extends Database<any>> {
+  constructor(private db: T, private storeName: T['stores'][number]['name'])
+}
+```
+
+You pass a `Database` descriptor (which lists stores and their optional `encryptedName`) and the name of the target store. The class looks up the store descriptor to determine whether the store is encryptable.
+
+**Cache and batching:**
+
+Reads populate an in-memory `cache` object. Subsequent `get()` calls for the same key return from cache without touching IndexedDB. Writes go to cache immediately and are flushed to the database via `queueMicrotask`-throttled batches, so rapid successive writes are coalesced into a single `IDBObjectStore.put` call.
+
+**Encryption toggling:**
+
+```typescript
+// src/lib/storage.ts
+public static async toggleEncryptedForAll(shouldEncrypt: boolean) {
+  // For every AppStorage that has an encryptedName:
+  // reads all entries → clears the plain store → writes to EncryptedStorageLayer
+  // (or the reverse when disabling encryption)
+}
+```
+
+`AppStorage.toggleStorage(enabled, clearWrite)` is called on login/logout and when the passcode is engaged or released. When `enabled` is `false`, all pending writes are discarded to prevent stale data from leaking after sign-out.
+
+## Database schemas
+
+Database descriptors are defined in `src/config/databases/`.
+
+**Per-account database** (`src/config/databases/state.ts` → `getDatabaseState`):
+
+Named `tweb-account-{accountNumber}` at schema version 9. Every store has an encrypted twin:
+
+| Store | Encrypted as |
+|---|---|
+| `session` | `session__encrypted` |
+| `stickerSets` | `stickerSets__encrypted` |
+| `users` | `users__encrypted` |
+| `chats` | `chats__encrypted` |
+| `messages` | `messages__encrypted` |
+| `dialogs` | `dialogs__encrypted` |
+| `webapp` | `webapp__encrypted` |
+
+**Common database** (`getCommonDatabaseState`):
+
+Named `tweb-common` at version 8. Contains `session` and `localStorage__encrypted` (used by `LocalStorageController` for encrypted session tokens).
+
+**Legacy database** (`session.ts`):
+
+Named `telegram` at version 1 with a single `session` store. Kept for backwards compatibility with Webogram.
+
+## State storage
+
+`src/lib/stateStorage.ts` defines `StateStorage`, a thin `AppStorage` subclass bound to the `session` store of the per-account database:
+
+```typescript
+// src/lib/stateStorage.ts
+export default class StateStorage extends AppStorage<{
+  chatPositions: { [peerId_threadId: string]: ChatSavedPosition },
+  drafts: AppDraftsManager['drafts']
+} & State, AccountDatabase> {
+  constructor(accountNumber: ActiveAccountNumber | 'old') {
+    const db = accountNumber === 'old'
+      ? getOldDatabaseState()
+      : getDatabaseState(accountNumber);
+    super(db, 'session');
+  }
+}
+```
+
+The `State` type (from `src/config/state.ts`) defines the full shape of persisted application state: notification settings, privacy cache, theme preferences, sticker ordering, and more. `AppStateManager` wraps `StateStorage` and exposes reactive getters for the UI.
+
+## Session and local storage
+
+**`src/lib/sessionStorage.ts`** exports a `LocalStorageController` pre-configured with the keys that must survive across sessions but must also be encrypted when the passcode is on:
+
+```typescript
+// src/lib/sessionStorage.ts
+const sessionStorage = new LocalStorageController<StorageValues & DeprecatedStorageValues>([
+  'account1', 'account2', 'account3', 'account4',
+  'auth_key_fingerprint', 'user_auth', 'dc'
+]);
+```
+
+The constructor's array argument defines the *encryptable keys*. When the passcode is active, reads and writes for those keys are redirected to `EncryptedStorageLayer` backed by the `localStorage__encrypted` store in the common database. Non-encryptable keys (e.g., `k_build`, `xt_instance`) remain in plain `localStorage`.
+
+**`src/lib/localStorage.ts`** provides `LocalStorage<T>` (the synchronous raw wrapper) and `LocalStorageController<T>` (the async, encryption-aware public API). Worker code cannot access `window.localStorage` directly — it sends `localStorageProxy` messages to the main thread, which `MTProtoMessagePort` dispatches to the appropriate `LocalStorageController` method.
+
+## Encrypted storage layer
+
+`src/lib/encryptedStorageLayer.ts` implements `EncryptedStorageLayer<T>`, a `StorageLayer` implementation that stores all data as a single AES-CTR-encrypted JSON blob in one IDB record keyed `'data'`.
+
+<Steps>
+  <Step title="Key retrieval">
+    `EncryptionKeyStore.get()` retrieves the symmetric key derived from the user's passcode. The key is held in memory for the duration of the session.
+  </Step>
+  <Step title="Serialize">
+    The in-memory `data` dictionary is JSON-serialized and converted to a `Uint8Array`.
+  </Step>
+  <Step title="Encrypt">
+    `cryptoMessagePort.invokeCryptoNew({method: 'aes-local-encrypt', args: [{key, data}], transfer: [data.buffer]})` encrypts the buffer. The `ArrayBuffer` is transferred (not copied) to the crypto worker.
+  </Step>
+  <Step title="Persist">
+    The encrypted `Uint8Array` is saved to IDB under the single key `'data'`. Saves are throttled with `asyncThrottle` (currently 0 ms — every save is immediate but only one save can be in flight at a time).
+  </Step>
+</Steps>
+
+On load, `loadEncrypted()` reverses this: it reads the blob, decrypts it, and populates the in-memory dictionary. Subsequent `get()` calls read directly from memory without any IDB round-trip.
+
+```typescript
+// src/lib/encryptedStorageLayer.ts
+private static async encrypt(data: StoredData): Promise<Uint8Array | null> {
+  const key = await EncryptionKeyStore.get();
+  const dataAsBuffer = convertToUint8Array(JSON.stringify(data));
+  return cryptoMessagePort.invokeCryptoNew({
+    method: 'aes-local-encrypt',
+    args: [{ key, data: dataAsBuffer }],
+    transfer: [dataAsBuffer.buffer]
+  });
+}
+```
+
+`EncryptedStorageLayer` uses a singleton pattern (`getInstance(db, encryptedStoreName)`) so that the same in-memory dictionary is shared across all callers for a given store, preventing write races.
+
+## Specialized storage collections
+
+`src/lib/storages/` contains storage classes for data structures that need more than key-value semantics:
+
+| File | Purpose |
+|---|---|
+| `dialogs.ts` — `DialogsStorage` | Ordered dialog list with folder/filter support, unread counts, and pinned positions |
+| `peers.ts` — `PeersStorage` | Unified peer cache that normalizes users and chats to a common `PeerId` key |
+| `thumbs.ts` — `ThumbsStorage` | In-memory cache for downloaded thumbnail `Blob` objects, keyed by file location |
+| `references.ts` — `ReferencesStorage` | Tracks media file reference bytes, which Telegram requires for re-fetching media whose reference has expired |
+| `filters.ts` — `FiltersStorage` | Persists the ordered list of chat folder filters and their unread counts |
+| `monoforumDialogs.ts` — `MonoforumDialogsStorage` | Dialog list for monoforum channels (topics-only channels) |
+
+<Warning>
+  Encryptable `AppStorage` stores must only be written from the shared worker, not from the main window thread. Writing from the window thread when the passcode is active can cause data mismatches between the plain and encrypted stores. The code includes a development-mode guard for this.
+</Warning>
+
+## Passcode lock and storage toggling
+
+When the user enables the passcode:
+
+1. `AppStorage.toggleEncryptedForAll(true)` reads every encryptable store's entries, clears the plain IDB store, and re-saves all entries into the corresponding `EncryptedStorageLayer`.
+2. `LocalStorageController.encryptEncryptable()` copies the encryptable `localStorage` keys into `EncryptedStorageLayer` and deletes them from plain `localStorage`.
+
+When the passcode is disabled, the same steps run in reverse via `toggleEncryptedForAll(false)` and `decryptEncryptable()`.
+
+When the passcode lock screen is shown (screen locked but not disabled), `AppStorage.toggleStorage(false, true)` disables all writes and clears pending queues, so no data leaks to unencrypted storage while the screen is locked.

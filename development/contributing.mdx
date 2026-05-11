@@ -1,0 +1,164 @@
+---
+title: "How to contribute code and report bugs in Telegram Web K"
+description: "Code style, TypeScript conventions, Vitest testing, build scripts, and how to report bugs or suggest features to the Telegram Web K project."
+keywords: ['contributing', 'code style', 'ESLint', 'TypeScript', 'vitest', 'pnpm', 'GPL', 'bugs', 'pull request']
+---
+
+Telegram Web K is an open-source project licensed under GPL v3, authored by Eduard Kuzmenko. The codebase is large — over 100,000 lines of TypeScript — and highly performance-oriented. Before submitting a change, familiarise yourself with the code style rules and project conventions described here to keep the codebase consistent and reviewable.
+
+## Package manager
+
+The project requires **pnpm 9**. A `preinstall` hook enforces this and will exit with an error if you attempt to use `npm` or `yarn`.
+
+```bash
+# Install dependencies
+pnpm install
+
+# Start the dev server on :8080
+pnpm start
+
+# Production build → dist/
+pnpm build
+```
+
+<Warning>
+Do not use `npm install` or `yarn install`. The lockfile is pnpm-specific and the preinstall hook will reject other package managers.
+</Warning>
+
+## Running tests
+
+Tests are written with **Vitest** and live in `src/tests/`. The Vitest configuration uses `globals: true`, a jsdom environment, and `threads: false`.
+
+```bash
+# Run the full test suite
+pnpm test
+
+# Run a specific test file
+pnpm test src/tests/tl_utils
+```
+
+To add a new test, create a `.test.ts` file in `src/tests/` and import any setup you need from `src/tests/setup.ts`.
+
+## Linting
+
+ESLint is configured with a flat config in `eslint.config.mjs`. Run the linter before committing:
+
+```bash
+pnpm lint
+```
+
+Fix lint errors before opening a pull request. Do not add `// eslint-disable` comments without a documented reason.
+
+## Code style
+
+The style rules are enforced by ESLint. Key rules to know:
+
+<AccordionGroup>
+  <Accordion title="Indentation and whitespace">
+    - 2 spaces, no tabs.
+    - Unix line endings (LF). Files must end with a newline.
+    - No trailing spaces.
+    - Maximum 2 consecutive blank lines.
+  </Accordion>
+
+  <Accordion title="Quotes and punctuation">
+    - Single quotes for strings; template literals are allowed.
+    - No trailing commas in objects or arrays: `{a: 1, b: 2}` not `{a: 1, b: 2,}`.
+    - No spaces inside `{}` or `[]`: `{a: 1}` not `{ a: 1 }`.
+  </Accordion>
+
+  <Accordion title="Keywords and function calls">
+    - No space after `if`, `for`, `while`, `switch`, `catch`: use `if(condition)` not `if (condition)`.
+    - No space before function parentheses: `function foo()` not `function foo ()`.
+  </Accordion>
+
+  <Accordion title="Variables and returns">
+    - Use `const` or `let`; never `var`.
+    - Do not use `return await` — return the promise directly.
+    - Use `prefer-const` with destructuring set to `all`.
+  </Accordion>
+</AccordionGroup>
+
+## TypeScript conventions
+
+The project uses TypeScript 5.7 with `strict: true`, but with `strictNullChecks: false` and `strictPropertyInitialization: false` to accommodate the existing codebase.
+
+Additional things to know:
+
+- `jsxImportSource` is `solid-js` — this is **not React**. Do not import from `react`.
+- `useDefineForClassFields: false` — class field assignments in constructors are not re-initialised by the field declaration.
+- MTProto API types are auto-generated into `src/layer.d.ts` (664 KB). Import from `@layer`:
+
+  ```typescript
+  import {Message, Chat, User} from '@layer';
+  ```
+
+- Global types (`PeerId`, `UserId`, `ChatId`, `Long`, `Icon`, `ApiError`) are available everywhere without import. They are defined in `src/global.d.ts`.
+- Use path aliases instead of relative imports:
+
+  ```typescript
+  // Correct
+  import rootScope from '@lib/rootScope';
+  import classNames from '@helpers/string/classNames';
+
+  // Incorrect
+  import rootScope from '../../lib/rootScope';
+  ```
+
+## Code organisation
+
+| Directory | Contents |
+|---|---|
+| `src/components/` | SolidJS UI components (`.tsx`), organised by feature |
+| `src/lib/appManagers/` | 55+ domain managers — business logic layer |
+| `src/lib/mtproto/` | MTProto protocol implementation |
+| `src/lib/storages/` | IndexedDB and localStorage wrappers |
+| `src/helpers/` | 145+ pure utility functions |
+| `src/hooks/` | SolidJS custom hooks |
+| `src/stores/` | Reactive Solid stores bridging `rootScope` events |
+| `src/config/` | App constants, state schema, emoji definitions |
+| `src/environment/` | Browser feature detection (39 modules) |
+| `src/tests/` | Vitest test files |
+
+When adding a new feature, prefer extending an existing manager or component over creating a new file. If a new manager is genuinely needed, extend `AppManager` from `src/lib/appManagers/manager.ts` and register it in `src/lib/appManagers/createManagers.ts`.
+
+## Codegen scripts
+
+Two scripts generate files that should not be edited by hand:
+
+```bash
+# Regenerate MTProto type definitions from the TL schema
+pnpm generate-mtproto-types
+
+# Regenerate the Icon type and icon sprite from SVG sources
+pnpm generate-icons
+```
+
+Run these after updating `schema.js` or adding new SVG icons, then commit the generated files alongside the change.
+
+## Understanding code duplications
+
+The `CODE_DUPLICATIONS.md` file at the repository root is a comprehensive analysis of known code duplication patterns across the codebase. Before introducing a new utility function, CSS mixin, or component pattern, read this file to check whether an abstraction already exists or whether a proposed fix is already documented.
+
+Notable duplications to be aware of when writing new code:
+
+- **Request deduplication** — use a `Map<key, Promise>` pattern (or an upcoming `RequestDeduplicator` utility). See `CODE_DUPLICATIONS.md §4.3`.
+- **Flex centering** — there is currently no shared `@mixin flex-center()`, so it appears 270+ times inline. A PR adding this mixin would be welcome.
+- **API result processing** — the `saveApiChats` + `saveApiUsers` pair is called at 226 sites. If your manager method receives a result with `{chats, users}`, always call `this.appUsersManager.saveApiPeers(result)` rather than calling them separately.
+
+## Reporting bugs and suggesting features
+
+Bug reports and feature requests go to Telegram's official **Bugs & Suggestions Platform**:
+
+**[bugs.telegram.org/c/4002](https://bugs.telegram.org/c/4002)**
+
+When filing a report:
+- Include the browser name and version.
+- Include the app version (visible in Settings → About).
+- Describe the steps to reproduce the issue.
+- Attach screenshots or a screen recording if the issue is visual.
+- Check for an existing report before opening a new one.
+
+## License
+
+The source code is licensed under the **GNU General Public License v3 (GPL v3)**. Any contribution you submit is understood to be offered under the same license. See the `LICENSE` file in the repository root for the full text.

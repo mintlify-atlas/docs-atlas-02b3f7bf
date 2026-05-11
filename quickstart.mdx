@@ -1,81 +1,168 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Quickstart: install and run Telegram Web K locally"
+description: "Run Telegram Web K locally in under five minutes: clone the repo, install pnpm dependencies, set your API credentials, and open the dev server."
+keywords: ["telegram web k", "quickstart", "local development", "pnpm", "docker", "dev server"]
 ---
 
-## Get started in three steps
+Telegram Web K uses [pnpm](https://pnpm.io) as its package manager (enforced via a `preinstall` hook — `npm install` and `yarn` will not work). Before you begin, make sure you have **Node.js 18+** and **pnpm 9+** installed. You will also need a Telegram API ID and hash, which you can get for free from [my.telegram.org](https://my.telegram.org) in under a minute.
 
-Get your documentation site running locally and make your first customization.
+<Info>
+  **Prerequisites:**
+  - Node.js 18 or higher
+  - pnpm 9.15 or higher (`npm install -g pnpm`)
+  - A Telegram account to obtain API credentials
+</Info>
 
-### Step 1: Set up your local environment
+## Local setup
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Clone the repository">
+    Clone Telegram Web K from GitHub and enter the project directory:
 
-### Step 2: Deploy your changes
+    ```bash
+    git clone https://github.com/TelegramOrg/Telegram-web-k.git
+    cd Telegram-web-k
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Install dependencies">
+    Install all dependencies with pnpm. The `preinstall` script enforces pnpm, so other package managers will fail immediately:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    pnpm install
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Configure your API credentials">
+    Obtain a Telegram API ID and hash from [my.telegram.org](https://my.telegram.org):
 
-### Step 3: Go live
+    1. Log in with your Telegram phone number.
+    2. Go to **API development tools**.
+    3. Create a new application — the name and platform can be anything.
+    4. Copy your **App api_id** and **App api_hash**.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    Then create your local environment file. The `.env.local.example` file is empty by default; Vite will auto-copy it to `.env.local` on first run, but you can create it manually:
+
+    ```bash
+    cp .env.local.example .env.local
+    ```
+
+    Open `.env.local` and set your credentials:
+
+    ```bash
+    VITE_API_ID=your_api_id_here
+    VITE_API_HASH=your_api_hash_here
+    ```
+
+    <Warning>
+      Do not commit `.env.local` to version control. It contains your personal API credentials. The file is listed in `.gitignore` by default.
+    </Warning>
+  </Step>
+
+  <Step title="Start the development server">
+    Start Vite in development mode with hot module replacement:
+
+    ```bash
+    pnpm start
+    ```
+
+    The server starts on **http://localhost:8080** by default. The terminal will show the local URL once the build completes.
+  </Step>
+
+  <Step title="Open the app in your browser">
+    Navigate to [http://localhost:8080](http://localhost:8080) and sign in with your Telegram account. The dev server includes source maps and live reload — changes to TypeScript and SCSS files are applied without a full page refresh.
+  </Step>
+</Steps>
+
+## Available scripts
+
+The following scripts are defined in `package.json`:
+
+| Script | Command | Description |
+|---|---|---|
+| `start` | `pnpm start` | Start the Vite dev server with HMR on port 8080 |
+| `build` | `pnpm build` | Generate changelog then produce a minified production build in `public/` |
+| `serve` | `pnpm serve` | Build then serve the production build with Node.js |
+| `test` | `pnpm test` | Run the Vitest test suite |
+| `lint` | `pnpm lint` | Lint all TypeScript files under `src/` with ESLint |
+| `generate-changelog` | `pnpm generate-changelog` | Regenerate the changelog from commit history |
+| `generate-icons` | `pnpm generate-icons` | Rebuild the icon font from IcoMoon sources |
+| `watch-lang` | `pnpm watch-lang` | Watch and apply language pack changes during development |
+
+## Running in Docker
+
+Docker is the recommended approach when you want a clean, reproducible environment or when you are preparing a production image.
+
+### Development with Docker
+
+<Steps>
+  <Step title="Install dependencies in a container">
+    ```bash
+    docker-compose up tweb.dependencies
+    ```
+  </Step>
+  <Step title="Start the dev container">
+    ```bash
+    docker-compose up tweb.develop
+    ```
+
+    Open [http://localhost:8080](http://localhost:8080) in your browser.
+  </Step>
+</Steps>
+
+### Production with Docker
+
+<Steps>
+  <Step title="Start the production nginx container">
+    ```bash
+    docker-compose up tweb.production -d
+    ```
+
+    Open [http://localhost:80](http://localhost:80) in your browser.
+  </Step>
+  <Step title="Build a custom Docker image (optional)">
+    To build a portable production image you can push to Docker Hub:
+
+    ```bash
+    docker build -f ./.docker/Dockerfile_production \
+      -t your-username/telegram-web-k:latest .
+    ```
+  </Step>
+</Steps>
+
+## Debugging query parameters
+
+Append these query parameters to the local URL to change the client's behavior at runtime. They are parsed by `src/config/modes.ts` on page load.
+
+| Parameter | Example URL | Effect |
+|---|---|---|
+| `test=1` | `http://localhost:8080/?test=1` | Connect to Telegram's test data centers instead of production |
+| `debug=1` | `http://localhost:8080/?debug=1` | Enable verbose logging in the browser console |
+| `noSharedWorker=1` | `http://localhost:8080/?noSharedWorker=1` | Disable the Shared Worker — useful for inspecting network calls per tab |
+| `noServiceWorker=1` | `http://localhost:8080/?noServiceWorker=1` | Disable the Service Worker — helpful when debugging push or caching issues |
+| `http=1` | `http://localhost:8080/?http=1` | Force HTTPS transport for MTProto instead of WebSocket |
+
+<Tip>
+  Combine parameters with `&`: `http://localhost:8080/?test=1&debug=1` connects to test DCs with full logging enabled.
+</Tip>
+
+## Taking local storage snapshots
+
+The `snapshot-server` mini-app in the repository lets you export and import the client's local storage and IndexedDB state. This is useful for reproducing bugs without needing the original account. See `./snapshot-server/README.md` for usage instructions.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    All environment variables, app config fields, and runtime modes explained.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/development/architecture">
+    How workers, managers, and the MTProto layer fit together.
+  </Card>
+  <Card title="Debugging" icon="bug" href="/development/debugging">
+    Dev tools, global class bindings, icon library preview, and snapshot server.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Build and run production Docker images for self-hosting.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

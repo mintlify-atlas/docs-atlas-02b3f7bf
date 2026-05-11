@@ -1,0 +1,118 @@
+---
+title: "Messaging features in Telegram Web K browser client"
+description: "Rich text formatting, replies, threads, scheduling, reactions, message effects, polls, and more — all messaging features available in Telegram Web K."
+keywords: ["messaging", "text formatting", "replies", "reactions", "polls", "scheduled messages", "message effects", "translations"]
+---
+
+Telegram Web K delivers a complete messaging experience directly in your browser. From finely formatted text and inline custom emoji to scheduled sends and animated message effects, every capability you expect from a native Telegram client is available on the web. The core messaging stack is powered by `appMessagesManager`, with polls handled by `appPollsManager` and drafts kept in sync via `appDraftsManager`.
+
+## Text formatting
+
+All standard Telegram formatting marks are supported and can be applied from the message composer toolbar or with keyboard shortcuts.
+
+| Format | Shortcut |
+|--------|----------|
+| **Bold** | `Ctrl+B` / `⌘B` |
+| _Italic_ | `Ctrl+I` / `⌘I` |
+| Underline | `Ctrl+U` / `⌘U` |
+| ~~Strikethrough~~ | `Ctrl+Shift+X` / `⌘Shift+X` |
+| `Monospace` | `Ctrl+Shift+M` / `⌘Shift+M` |
+| Spoiler | `Ctrl+Shift+P` / `⌘Shift+P` |
+
+<Tip>
+Code blocks rendered with `messageEntityPre` include syntax highlighting. Paste a block and select a language from the format menu for colored output.
+</Tip>
+
+Beyond the basics, Web K also supports:
+
+- **Collapsible blockquotes** — long quoted passages collapse by default and expand on click, keeping the chat readable.
+- **Custom emoji inline in text** — Premium users can embed custom emoji anywhere in a message using `messageEntityCustomEmoji`. All users see them rendered correctly.
+- **Spoiler text** — content is blurred until the reader taps or clicks to reveal it.
+
+## Message actions
+
+<AccordionGroup>
+  <Accordion title="Replies and threads">
+    Reply to any message to create a visual chain. Tapping the reply preview jumps back to the original. In channels with a linked discussion group, the **thread reply** opens as a separate conversation pane. Quote replies let you highlight a specific passage from a long message — select text before hitting Reply to include only that excerpt.
+  </Accordion>
+
+  <Accordion title="Forwarding">
+    Forward one or more selected messages to any chat or Saved Messages. The forward dialog lets you:
+
+    - Remove the original sender attribution (forward anonymously).
+    - Include or strip any attached reply previews.
+    - Forward with an avatar (author photo) shown inline.
+  </Accordion>
+
+  <Accordion title="Editing messages">
+    Both text and media can be edited after sending. An edit timestamp appears below the message. Voice messages and round video messages cannot be edited.
+  </Accordion>
+
+  <Accordion title="Scheduled messages">
+    Select **Schedule message** from the send button menu to pick a delivery date and time. Scheduled messages appear in a dedicated list accessible from the chat header. You can edit or cancel a scheduled message before it is sent.
+  </Accordion>
+
+  <Accordion title="Pinning messages">
+    Any message in a chat or channel can be pinned by an admin. A pinned-message banner appears at the top of the chat; clicking it scrolls to the pinned content. Channels can maintain multiple pinned messages.
+  </Accordion>
+
+  <Accordion title="Deleting messages">
+    Delete messages for yourself only, or for all participants (where permitted). Bulk delete is available via multi-select mode. Admins in supergroups have additional bulk-delete controls.
+  </Accordion>
+</AccordionGroup>
+
+## Reactions and effects
+
+<AccordionGroup>
+  <Accordion title="Reactions">
+    Tap the reaction button on any message to open the emoji picker. Premium users can send infinite reactions; free accounts are limited to a single reaction per message. Paid reactions (using Telegram Stars) are supported in channels that have enabled them. The full reactions API is managed by `appReactionsManager`.
+  </Accordion>
+
+  <Accordion title="Message effects">
+    Certain messages trigger animated effects that play over the chat — confetti, sparkles, and other per-message animations. Effects are chosen from the send-button menu before sending.
+  </Accordion>
+
+  <Accordion title="Read receipts">
+    In private chats and small groups, a second tick (✓✓) indicates delivery, and a blue double tick indicates the message has been read. Tap the receipt indicator in a private chat to see exactly who has read the message and when.
+  </Accordion>
+</AccordionGroup>
+
+## Polls and dice
+
+<AccordionGroup>
+  <Accordion title="Polls">
+    Create regular polls or quiz-mode polls from the attachment menu. Poll options support up to 10 choices. Quiz polls designate one correct answer and can display an explanation after voting. Results update in real time. All poll logic is handled by `appPollsManager`.
+  </Accordion>
+
+  <Accordion title="Dice">
+    Send any supported dice emoji (🎲 🎯 🏀 ⚽ 🎳 🎰) to trigger an animated roll with a random result. The value is determined server-side, making outcomes verifiable.
+  </Accordion>
+</AccordionGroup>
+
+## Translations
+
+Message translation is available for both individual messages and entire chats. In a chat where the language differs from your interface language, a **Translate** button appears above the message list. Individual messages can also be translated via the context menu. Auto-translation per channel can be toggled in channel settings. The translation layer is powered by `appTranslationsManager`.
+
+## Drafts
+
+Unsent message drafts are saved automatically per chat and synced to the cloud via `appDraftsManager`. Switching between chats preserves each draft independently. Drafts survive page reloads and browser restarts.
+
+## Typing indicators
+
+Web K displays typing indicators for all supported action types: typing text, recording audio, uploading files, choosing stickers, and more. These update in real time in the chat header and in the chat list.
+
+## Search
+
+<AccordionGroup>
+  <Accordion title="In-chat search">
+    The search icon in the chat topbar opens `topbarSearch.tsx`, which filters messages by keyword within the current conversation. Results are highlighted inline.
+  </Accordion>
+
+  <Accordion title="Global search">
+    The main search bar searches contacts, chats, public channels, and messages site-wide via `appSearch.ts`. Results are grouped by type (contacts, messages, channels, bots) and can be filtered by date.
+  </Accordion>
+</AccordionGroup>
+
+## Saved Messages
+
+Saved Messages is a private bookmark space tied to your account. Messages forwarded there are organized by peer (the chat they came from). Premium users can add color tags to saved messages for faster retrieval.

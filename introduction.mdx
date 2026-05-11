@@ -1,0 +1,61 @@
+---
+title: "Telegram Web K: open-source browser Telegram client"
+description: "Telegram Web K is the official open-source Telegram web client, built with TypeScript and SolidJS, licensed under GPL v3 and available at web.telegram.org/k."
+keywords: ["telegram", "web client", "open source", "MTProto", "SolidJS", "TypeScript", "WebAssembly"]
+---
+
+Telegram Web K is the official open-source Telegram client for browsers, publicly available at [web.telegram.org/k](https://web.telegram.org/k/). It began as a fork of [Webogram](https://github.com/zhukov/webogram) — the original browser-based Telegram client by Igor Zhukov — and has since been rebuilt with a modern TypeScript-first architecture, replacing legacy patterns with a multi-worker concurrency model, fine-grained reactive rendering, and WebAssembly-powered animated sticker playback. The project is licensed under [GPL v3](https://github.com/TelegramOrg/Telegram-web-k/blob/master/LICENSE) and actively maintained by the Telegram team.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, install dependencies, and run the dev server in minutes.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Set up API credentials, environment variables, and runtime options.
+  </Card>
+  <Card title="Features" icon="sparkles" href="/features/messaging">
+    Messaging, media, calls, and privacy — the full Telegram feature set in a browser.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/development/architecture">
+    Workers, managers, MTProto, and the SolidJS component model.
+  </Card>
+</CardGroup>
+
+## What is Telegram Web K?
+
+Telegram Web K ("K" for its Kotlin-influenced codebase style) implements the complete Telegram client in the browser — no native app required. It uses **MTProto v2**, Telegram's own binary protocol, implemented entirely in TypeScript. A dedicated crypto Web Worker handles all encryption off the main thread, keeping the UI responsive even during heavy cryptographic operations.
+
+The client is structured around three concurrency layers:
+
+- **Shared Web Worker** — A single network connection shared across all browser tabs. Tabs share state without making redundant API calls, and a new tab can resume the session instantly.
+- **Service Worker** — Handles background push notifications, large file streaming, and caching. Files up to 4 GB can be downloaded and streamed without buffering the full content in memory.
+- **Lottie Worker (WASM)** — Animated Telegram stickers use the [rlottie](https://github.com/Samsung/rlottie) renderer compiled to WebAssembly, providing smooth 60 fps playback without JavaScript overhead.
+
+The UI layer is built with **SolidJS**, a fine-grained reactive framework. Unlike virtual DOM approaches, SolidJS compiles templates to direct DOM operations — making list updates, message insertion, and scroll management efficient even in chats with tens of thousands of messages.
+
+## Key technologies
+
+| Technology | Role |
+|---|---|
+| TypeScript | Entire codebase; strict types throughout |
+| SolidJS | Fine-grained reactive UI rendering |
+| MTProto v2 | Telegram binary protocol over WebSocket or HTTPS |
+| Web Workers | Crypto, MTProto networking, Lottie rendering |
+| Service Worker | Push notifications, file streaming, offline caching |
+| rlottie / WASM | Animated sticker playback at native speed |
+| Vite | Development server and production bundler |
+| pnpm | Package management (enforced via `preinstall` hook) |
+
+## Why self-host or contribute?
+
+**Self-hosting** gives you full control over the client your team or users interact with. Because Telegram Web K connects directly to Telegram's servers using your own API credentials, self-hosting is purely a frontend concern — you are not running a proxy or a backend service. You can customize the UI, add internal tooling, restrict features, or pin a specific version.
+
+**Contributing** is practical because the codebase is TypeScript throughout. The architecture is well-separated: MTProto, managers, UI components, and workers each live in distinct layers. Source maps are included in production builds, and the project ships with a full ESLint configuration and Vitest test suite. The [Suggestions Platform](https://bugs.telegram.org/c/4002) is the official channel for reporting issues and feature requests.
+
+<Note>
+  Telegram Web K requires a Telegram API ID and API hash. You can register your own application for free at [my.telegram.org](https://my.telegram.org). The default credentials in `.env` are provided for development convenience and connect to the production Telegram network.
+</Note>
+
+## License and availability
+
+The source code is licensed under **GPL v3**. The live build is served by Telegram at [web.telegram.org/k](https://web.telegram.org/k/). The repository is hosted at [github.com/TelegramOrg/Telegram-web-k](https://github.com/TelegramOrg/Telegram-web-k).

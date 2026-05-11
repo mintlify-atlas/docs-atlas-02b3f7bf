@@ -1,0 +1,98 @@
+{
+  "projectType": "saas",
+  "projectName": "Telegram Web K",
+  "projectDescription": "A full-featured Telegram web client built with TypeScript and SolidJS, implementing the MTProto protocol for secure, real-time messaging in the browser.",
+  "theme": "almond",
+  "primaryColor": "#3894ec",
+  "lightColor": "#90c4f4",
+  "darkColor": "#6d7475",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/messaging",
+              "features/media",
+              "features/calls",
+              "features/privacy"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/local",
+              "deployment/docker",
+              "deployment/production"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/architecture",
+              "development/workers",
+              "development/debugging",
+              "development/contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Internals",
+        "groups": [
+          {
+            "group": "Core Systems",
+            "pages": [
+              "internals/mtproto",
+              "internals/crypto",
+              "internals/managers",
+              "internals/storage"
+            ]
+          },
+          {
+            "group": "UI & Components",
+            "pages": [
+              "internals/components",
+              "internals/theming",
+              "internals/localization"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Full MTProto v2 implementation with end-to-end encryption",
+    "Real-time messaging with support for text, media, stickers, GIFs, and voice messages",
+    "Multi-tab support with seamless state sync across browser windows",
+    "Group calls, video calls, and RTMP live stream viewing",
+    "Telegram Premium features including custom emoji, large file transfers up to 4GB, and message translation",
+    "Service Worker-based background sync and push notifications",
+    "Shared Web Worker for efficient multi-tab networking",
+    "Lottie animation rendering via rlottie (WASM)",
+    "Encrypted local storage with passcode lock support",
+    "Comprehensive settings: folders, privacy, themes, notifications, and more"
+  ],
+  "publicApiSurface": [
+    "MTProto networker (src/lib/mtproto/networker.ts)",
+    "API Manager (src/lib/appManagers/apiManager.ts)",
+    "App Managers: appMessagesManager, appChatsManager, appUsersManager, appStickersManager, appStoriesManager, and 40+ others",
+    "rootScope event bus (src/lib/rootScope.ts)",
+    "Service Worker (sw.ts) for caching and push notifications",
+    "Shared Worker message port (src/lib/superMessagePort.ts)",
+    "Crypto worker (src/lib/crypto/crypto.worker.ts)",
+    "Lang pack system (src/lib/langPack.ts)",
+    "Theme controller (src/helpers/themeController.ts)",
+    "Internal link processor (src/lib/internalLinkProcessor.ts)"
+  ]
+}

@@ -1,0 +1,174 @@
+---
+title: "Debugging Telegram Web K: browser tools and techniques"
+description: "URL query parameters, global DevTools bindings, snapshot server, logger utilities, and source maps for debugging Telegram Web K locally or in production."
+keywords: ['debugging', 'query parameters', 'logger', 'snapshot', 'dev tools', 'noSharedWorker', 'test DCs', 'source maps']
+---
+
+Telegram Web K includes several built-in debugging aids: URL query parameters that switch the app into special modes, globally accessible class instances you can inspect in DevTools, a snapshot server for capturing and restoring state, and a structured logger. Source maps are included in production builds so that stack traces point to readable TypeScript rather than minified output.
+
+## Query parameters
+
+Append these parameters to any app URL to change its runtime behaviour. They work in both local development (`http://localhost:8080/`) and in production (`https://web.telegram.org/k/`).
+
+<Steps>
+  <Step title="Enable test data centres">
+    Connect to Telegram's test environment instead of production DCs. Test accounts and test bots live here.
+
+    ```
+    http://localhost:8080/?test=1
+    ```
+
+    <Warning>
+    Test DCs use separate account databases. Any account you create there is isolated from your production account.
+    </Warning>
+  </Step>
+
+  <Step title="Enable verbose logging">
+    Turn on detailed debug output from the MTProto networker, managers, and workers. Logs appear in the browser console with coloured prefixes.
+
+    ```
+    http://localhost:8080/?debug=1
+    ```
+  </Step>
+
+  <Step title="Disable the Shared Worker">
+    Run the worker logic in a plain `Worker` instead of a `SharedWorker`. This gives you a single unified DevTools context — useful when you want to set breakpoints inside manager code without navigating between separate worker panels.
+
+    ```
+    http://localhost:8080/?noSharedWorker=1
+    ```
+  </Step>
+
+  <Step title="Force HTTP transport">
+    Force the MTProto transport layer to use HTTPS long-polling instead of WebSockets. Useful for testing in network environments that block WebSocket connections.
+
+    ```
+    http://localhost:8080/?http=1
+    ```
+  </Step>
+
+  <Step title="Combine parameters">
+    Multiple parameters can be combined with `&`:
+
+    ```
+    http://localhost:8080/?test=1&debug=1&noSharedWorker=1
+    ```
+  </Step>
+</Steps>
+
+## Global console bindings
+
+Many internal objects are mounted to `window` (or the global scope of the relevant worker) so you can inspect them directly in DevTools without adding any code. The mounting is controlled by `MOUNT_CLASS_TO` from `src/config/debug.ts`.
+
+Notable globals available on the main thread:
+
+| Name | What it is |
+|---|---|
+| `rootScope` | The global event bus and app context (`src/lib/rootScope.ts`) |
+| `appImManager` | The active chat / IM manager |
+| `apiManagerProxy` | The main-thread proxy that routes calls to the Shared Worker |
+
+To discover all mounted globals, search the codebase:
+
+```bash
+grep -r 'MOUNT_CLASS_TO' src/ --include='*.ts' -l
+```
+
+Then in DevTools:
+
+```javascript
+// Example: inspect the root scope's current user ID
+rootScope.myId
+
+// Check premium status
+rootScope.premium
+
+// Inspect all active connection statuses
+rootScope.getConnectionStatus()
+```
+
+<Note>
+Globals are only mounted in development builds by default. In production, `MOUNT_CLASS_TO` resolves to an empty object unless you have enabled debug mode with `?debug=1`.
+</Note>
+
+## Icon library preview
+
+To see every SVG icon available in the app, call the global `showIconLibrary()` function from the browser console:
+
+```javascript
+showIconLibrary()
+```
+
+A full-page overlay will appear listing all icons by name. This is useful when choosing the correct icon name for a new UI element.
+
+## Source maps in production
+
+Source maps are included in the production build. When you open DevTools on `https://web.telegram.org/k/` and navigate to Sources, you will see the original TypeScript file paths. Stack traces in the Console also resolve to TypeScript line numbers automatically.
+
+This means you can debug production issues the same way you would debug locally — set breakpoints, watch variables, and step through the original source.
+
+## Snapshot server
+
+The snapshot server at `./snapshot-server/` is a small Node.js app that lets you capture a complete dump of the browser's localStorage and IndexedDB, save it to disk, and restore it later. This is useful for:
+
+- Reproducing a specific app state reliably across restarts.
+- Sharing a reproducible state with another developer.
+- Regression testing with a known-good baseline.
+
+<Steps>
+  <Step title="Read the README">
+    Check `./snapshot-server/README.md` for setup and usage instructions specific to your environment.
+  </Step>
+
+  <Step title="Start the snapshot server">
+    ```bash
+    node snapshot-server/index.js
+    ```
+  </Step>
+
+  <Step title="Take a snapshot">
+    With the app open in your browser, follow the snapshot server's UI to capture the current localStorage and IndexedDB state.
+  </Step>
+
+  <Step title="Restore a snapshot">
+    Load a previously saved snapshot to restore the app to that exact state on next reload.
+  </Step>
+</Steps>
+
+## Logger system
+
+`src/lib/logger.ts` provides a structured logger used throughout the codebase. Each logger instance has a named prefix (e.g., `'MTPROTO'`, `'SW'`, `'MP-main'`) and supports log levels:
+
+```typescript
+import {logger, LogTypes} from '@lib/logger';
+
+const log = logger('MY_MODULE', LogTypes.Error | LogTypes.Debug | LogTypes.Warn);
+
+log('normal message');
+log.warn('warning message');
+log.error('error message', errorObject);
+log.debug('verbose debug info');
+```
+
+When `?debug=1` is active, `LogTypes.Debug` messages become visible. In production without the debug flag, only warnings and errors are shown.
+
+## Network statistics
+
+`src/lib/mtproto/networkStats.ts` tracks per-data-centre byte counts for both sent and received MTProto traffic. Access it from the Shared Worker's global context or via DevTools when using `?noSharedWorker=1`:
+
+```javascript
+// In the Shared Worker DevTools console:
+networkStats.getStats()
+```
+
+This is useful for diagnosing unexpected data usage or confirming that the correct DC is being used for a given operation.
+
+## Debugging the Shared Worker
+
+In Chrome, open `chrome://inspect/#workers` to attach DevTools to the Shared Worker directly. You can set breakpoints in manager code, inspect the `appManagersManager` state, and watch MTProto traffic in real time.
+
+In Firefox, open `about:debugging#/runtime/this-firefox` and find the Shared Worker under "Workers".
+
+<Tip>
+If you find the separate worker panel cumbersome, add `?noSharedWorker=1` to run all worker logic in a plain `Worker` that appears in the normal Sources panel alongside the main thread.
+</Tip>

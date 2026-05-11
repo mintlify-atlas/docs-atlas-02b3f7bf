@@ -1,0 +1,186 @@
+---
+title: 'Cryptography subsystem in Telegram Web K explained'
+description: 'AES-IGE/CTR, SHA, RSA, Diffie-Hellman, and SRP 2FA offloaded to a Web Worker in Telegram Web K, bridged by the typed CryptoMessagePort.'
+keywords: ['crypto worker', 'aes-ige', 'srp', 'diffie-hellman', 'rsa', 'sha256', 'cryptoMessagePort', 'web crypto']
+---
+
+Cryptographic operations in Telegram Web K never block the main thread. All heavyweight computation — AES encryption, SHA hashing, RSA, modular exponentiation, and SRP — runs inside a dedicated Web Worker. The rest of the application communicates with that worker through `CryptoMessagePort`, a typed message-passing bridge that makes cross-thread calls feel like ordinary async function calls. This page explains what each algorithm is used for and how to call into the worker from application code.
+
+<AccordionGroup>
+
+<Accordion title="Crypto worker architecture">
+
+The worker is defined in `src/lib/crypto/crypto.worker.ts`. On startup it registers handlers for every method listed in `CryptoMethods` and waits for `invoke` messages from the main thread or from other workers (such as the MTProto shared worker).
+
+`CryptoMessagePort` (`src/lib/crypto/cryptoMessagePort.ts`) is the client side of that bridge. A single default instance is exported and imported wherever crypto is needed:
+
+```typescript
+// src/lib/crypto/cryptoMessagePort.ts
+import CryptoWorker from '@lib/crypto/cryptoMessagePort';
+
+// call a method — returns a Promise
+const hash = await CryptoWorker.invokeCrypto('sha256', data);
+```
+
+`invokeCrypto` is a thin wrapper around `invokeCryptoNew`, which serializes `{method, args}` and posts it to the worker via `SuperMessagePort`. For `aes-encrypt` and `aes-decrypt`, the port cycles through available worker ports in round-robin order to keep multiple encryption streams from starving each other:
+
+```typescript
+const sendPortIndex = method === 'aes-encrypt' || method === 'aes-decrypt'
+  ? this.lastIndex = (this.lastIndex + 1) % this.sendPorts.length
+  : 0;
+```
+
+If the code calling `invokeCrypto` is itself running inside the worker (i.e., the MTProto worker), the call is dispatched synchronously to the registered listener without any `postMessage` round-trip, which avoids unnecessary latency on the hot encryption path.
+
+<Tip>
+  When transferring large `ArrayBuffer` values to the worker, pass them in the `transfer` array of `invokeCryptoNew`. This moves ownership to the worker without copying the buffer.
+</Tip>
+
+</Accordion>
+
+<Accordion title="Available crypto methods">
+
+Every method listed in `src/lib/crypto/crypto_methods.ts` is callable via `CryptoWorker.invokeCrypto(methodName, ...args)`. TypeScript infers argument and return types from the `CryptoMethods` map.
+
+| Method | Algorithm | Primary use |
+|---|---|---|
+| `sha1` | SHA-1 | Auth key hashing, message key derivation |
+| `sha256` | SHA-256 | SRP password hashing, DH fingerprints |
+| `pbkdf2` | PBKDF2-HMAC-SHA512 (100 000 iterations) | SRP password stretching |
+| `aes-encrypt` | AES-256-IGE | MTProto message encryption |
+| `aes-decrypt` | AES-256-IGE | MTProto message decryption |
+| `aes-local-encrypt` | AES-CTR (local data) | Passcode-protected storage |
+| `aes-local-decrypt` | AES-CTR (local data) | Passcode-protected storage |
+| `rsa-encrypt` | RSA-OAEP | DH params encryption during auth |
+| `factorize` | Brent-Pollard | PQ factorization during auth |
+| `mod-pow` | Big-integer modular exponentiation | DH key computation |
+| `computeSRP` | SRP-2048 | Two-factor authentication |
+| `generate-dh` | DH key generation | Voice/video calls |
+| `compute-dh-key` | DH shared secret | Voice/video calls |
+| `aes-ctr-prepare` / `aes-ctr-process` / `aes-ctr-destroy` | AES-CTR streaming | File encryption for calls |
+| `gzipUncompress` | Deflate | Decompressing gzip_packed responses |
+| `get-emojis-fingerprint` | SHA-256 + emoji map | Call key verification display |
+
+</Accordion>
+
+<Accordion title="AES-IGE message encryption">
+
+MTProto v2 encrypts every message with AES-256 in IGE (Infinite Garble Extension) mode. IGE is not part of standard library APIs, so it is implemented from scratch in `src/lib/crypto/utils/aesIGE.ts` using the `@cryptography/aes` package for the underlying block cipher.
+
+The key and IV for each message are derived from the `msg_key` (a 128-bit value) and the auth key:
+
+1. `msg_key` = middle 128 bits of `SHA-256(auth_key[88..120] + plaintext)` (for outgoing; different slice for incoming).
+2. `aesKey` and `aesIv` are derived from `msg_key` and `auth_key` via two more SHA-256 calls (see `MessageKeyUtils` in `src/lib/mtproto/messageKeyUtils.ts`).
+
+The networker calls:
+
+```typescript
+// src/lib/mtproto/networker.ts
+const encryptedBytes = await CryptoWorker.invokeCrypto(
+  'aes-encrypt',
+  dataWithPadding,
+  messageKeyData.aesKey,
+  messageKeyData.aesIv
+);
+```
+
+**AES-CTR for local storage** — When the passcode lock is active, `aes-local-encrypt` and `aes-local-decrypt` use AES-CTR via the `aesCtrUtils.ts` helpers. CTR mode is streaming-friendly and allows partial decryption, which matters for large IndexedDB blobs.
+
+</Accordion>
+
+<Accordion title="RSA key management">
+
+`src/lib/mtproto/rsaKeysManager.ts` holds the built-in RSA public keys used for the initial DH parameter exchange. Telegram rotates these keys, so the manager maps 64-bit fingerprints (SHA-1 of the key, last 8 bytes) to `{modulus, exponent}` objects.
+
+During authorization, the server sends a list of acceptable fingerprints. `rsaKeysManager.select(fingerprints)` picks the first fingerprint that matches a known key:
+
+```typescript
+const publicKey = await rsaKeysManager.select(auth.fingerprints);
+if(!publicKey) {
+  throw new Error('[MT] No public key found');
+}
+```
+
+RSA encryption itself is handled by `src/lib/crypto/utils/rsa.ts`, which uses the Web Crypto API (`SubtleCrypto.importKey` + `SubtleCrypto.encrypt`) with RSAES-PKCS1-v1_5. The result is passed to the crypto worker via the `rsa-encrypt` method.
+
+</Accordion>
+
+<Accordion title="Diffie-Hellman key exchange">
+
+Two DH workflows exist: one for MTProto authorization and one for voice/video calls.
+
+**MTProto authorization DH** — Handled entirely inside `Authorizer`. The client's private value `b` is 2048 random bits. `g_b = g^b mod p` and the shared secret `g_a^b mod p` are both computed via `CryptoWorker.invokeCrypto('mod-pow', ...)`.
+
+**Call DH** — `src/lib/crypto/generateDh.ts` generates the client's `a` and `g_a` for an E2E-encrypted call:
+
+```typescript
+// src/lib/crypto/generateDh.ts
+const a = generateA(p);           // safe random a: 1 < a < p-1
+const g_a = await cryptoWorker.invokeCrypto('mod-pow', gBytes, a, p);
+const g_a_hash = await cryptoWorker.invokeCrypto('sha256', g_a);
+```
+
+`src/lib/crypto/computeDhKey.ts` then computes the shared key from the remote party's `g_b`. The 256-byte SHA-256 fingerprint of the key is shown to both callers as the call encryption indicator (emoji fingerprint).
+
+<Note>
+  The DH prime used during MTProto authorization is validated in `authorizer.ts` against the exact 2048-bit prime from the MTProto security guidelines. No other prime is accepted.
+</Note>
+
+</Accordion>
+
+<Accordion title="SRP authentication for two-factor auth">
+
+`src/lib/crypto/srp.ts` implements SRP-2048 as required by `auth.checkPassword` for accounts with a cloud password.
+
+**Password hashing chain** (`makePasswordHash`):
+
+<Steps>
+  <Step title="Double-salt SHA-256">
+    Compute `SHA-256(salt1 + password_utf8 + salt1)`.
+  </Step>
+  <Step title="PBKDF2 key stretching">
+    Run `PBKDF2-HMAC-SHA512` for 100 000 iterations with `client_salt` as the salt. This is the computationally expensive step; it runs inside the crypto worker.
+  </Step>
+  <Step title="Server-salt wrap">
+    Compute `SHA-256(salt2 + pbkdf2_output + salt2)` to produce the final hash `x`.
+  </Step>
+</Steps>
+
+After hashing, `computeSRP` performs the full SRP-2048 protocol: it computes the verifier `v = g^x mod p`, derives the session key `K`, and produces `M1` — the proof of knowledge that the server checks. The output `InputCheckPasswordSRP` is passed directly to `auth.checkPassword`.
+
+```typescript
+// src/lib/crypto/srp.ts
+const out: InputCheckPasswordSRP.inputCheckPasswordSRP = {
+  _: 'inputCheckPasswordSRP',
+  srp_id: state.srp_id,
+  A: new Uint8Array(a_for_hash),
+  M1
+};
+```
+
+All big-integer arithmetic uses the `big-integer` npm package, since browsers do not expose modular exponentiation for arbitrary-precision integers through the Web Crypto API.
+
+</Accordion>
+
+<Accordion title="Web Crypto API integration">
+
+`src/lib/crypto/subtle.ts` exports a reference to `crypto.subtle` that works in both window and worker contexts:
+
+```typescript
+// src/lib/crypto/subtle.ts
+const subtle = typeof(window) !== 'undefined'
+  ? window.crypto.subtle
+  : self.crypto.subtle;
+export default subtle;
+```
+
+The Web Crypto API is used for:
+- **SHA-1 and SHA-256** — `subtle.digest('SHA-1', data)` and `subtle.digest('SHA-256', data)` underpin the `sha1` and `sha256` crypto methods.
+- **PBKDF2** — `subtle.deriveBits({name: 'PBKDF2', ...}, key, 512)` handles the SRP password stretching.
+- **RSA-OAEP** — `subtle.encrypt({name: 'RSA-OAEP'}, publicKey, data)` encrypts DH parameters.
+
+Operations that are not part of the Web Crypto standard — AES-IGE, AES-CTR, and big-integer modular exponentiation — are implemented in JavaScript using the `@cryptography/aes`, `@cryptography/sha1`, and `@cryptography/sha256` packages.
+
+</Accordion>
+
+</AccordionGroup>

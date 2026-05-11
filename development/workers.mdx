@@ -1,0 +1,157 @@
+---
+title: "Web Workers in Telegram Web K: roles and communication"
+description: "Shared Worker, Service Worker, Crypto Worker, and Lottie Workers in Telegram Web K — what each does and how they communicate via superMessagePort."
+keywords: ['shared worker', 'service worker', 'crypto worker', 'lottie worker', 'web workers', 'superMessagePort', 'broadcastChannel']
+---
+
+Telegram Web K offloads almost every expensive operation away from the browser's main thread. Four distinct worker contexts handle networking, caching, cryptography, and animation — leaving the main thread free to respond to user input and update the UI without stalling. This document explains what each worker does, where its code lives, and how they all talk to each other.
+
+## Shared Worker
+
+**Entry point:** `src/lib/mainWorker/index.worker.ts`
+
+The Shared Worker is the backbone of the application. Because it is a `SharedWorker` (not a plain `Worker`), a single instance is shared across every browser tab that has the app open. This means state is consistent across tabs — opening a new tab does not create a second copy of the networking stack.
+
+### What it does
+
+- Hosts all 55+ domain managers (`appMessagesManager`, `appChatsManager`, `appUsersManager`, etc.) from `src/lib/appManagers/`.
+- Runs the full MTProto implementation: session management, encryption, data centre selection, and transport negotiation (`src/lib/mtproto/`).
+- Maintains persistent application state via IndexedDB (`src/lib/storages/`) and localStorage (`src/lib/localStorage.ts`).
+- Relays `rootScope` broadcast events back to every connected main-thread tab through `superMessagePort`.
+- Manages the auto-lock feature (`src/lib/mainWorker/useAutoLock.ts`) for passcode-protected accounts.
+
+### How the main thread connects
+
+When `src/index.ts` starts, it calls `getProxiedManagers()` (`src/lib/getProxiedManagers.ts`), which creates a JavaScript `Proxy` over the `apiManagerProxy`. Every manager method call is transparently serialised into a `WorkerTask` and sent over `superMessagePort` to the Shared Worker. The result is returned as a `Promise`.
+
+```typescript
+// In any component or store — looks synchronous, but crosses a worker boundary:
+const user = await rootScope.managers.appUsersManager.getUser(userId);
+```
+
+### Fallback: noSharedWorker mode
+
+If `SharedWorker` is not supported in the current browser, or if you pass the `noSharedWorker=1` query parameter, the worker logic runs inside a regular `Worker` instead. This is also useful during debugging to get a unified DevTools context.
+
+```
+http://localhost:8080/?noSharedWorker=1
+```
+
+<Tip>
+Use `noSharedWorker=1` when you want to set breakpoints inside manager code. In Shared Worker mode, Chrome's DevTools shows the worker in a separate "Sources" panel under "Workers".
+</Tip>
+
+## Service Worker
+
+**Entry point:** `sw.ts` → `src/lib/serviceWorker/index.service.ts`
+
+The Service Worker intercepts network requests and handles push notifications, file streaming, and background tasks. It runs independently of any open tab and can receive push events even when the app is closed.
+
+### Responsibilities
+
+| Module | File | What it handles |
+|---|---|---|
+| Cache | `src/lib/serviceWorker/cache.ts` | CacheStorage API — assets, API responses |
+| Push notifications | `src/lib/serviceWorker/push.ts` | Web Push, notification display, click handling |
+| File streaming | `src/lib/serviceWorker/stream.ts` | Range-request streaming for media files |
+| File downloads | `src/lib/serviceWorker/download.ts` | Triggered download responses |
+| Share target | `src/lib/serviceWorker/share.ts` | Web Share Target API handling |
+| RTMP streams | `src/lib/serviceWorker/rtmp.ts` | Live stream proxying |
+| HLS | `src/lib/hls/` | Adaptive bitrate video playlists and segments |
+| Backgrounds | `src/lib/serviceWorker/backgrounds.ts` | Chat background image caching |
+| Cache cleanup | `src/lib/serviceWorker/clearOldCache.ts` | Pruning stale cache entries |
+
+### Communication
+
+The Service Worker communicates with open tabs via `ServiceMessagePort` (`src/lib/serviceWorker/serviceMessagePort.ts`), which extends `superMessagePort`. It also has a direct `MessageChannel` connection to the Shared Worker so that push events can be routed to the right account without going through the main thread.
+
+## Crypto Worker
+
+**Entry point:** `src/lib/crypto/crypto.worker.ts`
+
+All cryptographic operations run in a dedicated `Worker` so that expensive computations — particularly RSA encryption and DH key generation — do not block the Shared Worker's event loop during session establishment.
+
+### Operations handled
+
+```typescript
+// Methods exposed by the Crypto Worker:
+'sha1'              // SHA-1 hash
+'sha256'            // SHA-256 hash
+'pbkdf2'            // PBKDF2 key derivation (passcode)
+'aes-encrypt'       // AES-IGE encryption (MTProto)
+'aes-decrypt'       // AES-IGE decryption (MTProto)
+'aes-ctr-prepare'   // AES-CTR stream cipher setup
+'aes-ctr-process'   // AES-CTR block processing
+'aes-ctr-destroy'   // AES-CTR teardown
+'rsa-encrypt'       // RSA encryption (auth key exchange)
+'factorize'         // PQ factorisation (Brent-Pollard)
+'mod-pow'           // Modular exponentiation
+'generate-dh'       // Diffie-Hellman key generation
+'compute-dh-key'    // DH shared secret computation
+'computeSRP'        // SRP-2FA password authentication
+'gzipUncompress'    // GZip decompression
+'aes-local-encrypt' // Passcode-protected local storage encryption
+'aes-local-decrypt' // Passcode-protected local storage decryption
+```
+
+### How it is invoked
+
+The Shared Worker and Service Worker both communicate with the Crypto Worker via `cryptoMessagePort` (`src/lib/crypto/cryptoMessagePort.ts`). The main thread also proxies crypto calls through the Shared Worker when needed:
+
+```typescript
+// Inside index.worker.ts — the Shared Worker forwards crypto calls:
+port.addMultipleEventsListeners({
+  crypto: ({method, args}) => {
+    return cryptoWorker.invokeCrypto(method, ...args);
+  }
+});
+```
+
+## Lottie Workers
+
+**Entry point:** `src/lib/rlottie/rlottie.worker.ts`
+
+Animated stickers in Telegram use the Lottie format. Telegram Web K renders them with **rlottie**, a C++ Lottie renderer compiled to WebAssembly (`src/lib/rlottie/rlottie-wasm.wasm`). Because WebAssembly execution and frame decoding are CPU-intensive, they run in one or more dedicated workers.
+
+### How it works
+
+1. `lottieLoader.ts` (`src/lib/rlottie/lottieLoader.ts`) manages the pool of Lottie workers.
+2. Each `rlottiePlayer.ts` instance sends animation JSON and frame requests to a worker via `rlottieMessagePort.ts`.
+3. The worker decodes frames using the WASM module and transfers the raw pixel data back to the main thread as `ArrayBuffer` transferables (zero-copy).
+4. Colour replacements for themed stickers are applied by `applyReplacements.ts` before the frame is drawn to a canvas.
+
+<Note>
+Transferable objects are used for frame pixel data, so decoded frames are moved (not copied) from the worker back to the main thread. This avoids doubling memory usage for large sticker canvases.
+</Note>
+
+## Inter-worker communication
+
+All workers use `superMessagePort` (`src/lib/superMessagePort.ts`) as their message-passing protocol. Its key features:
+
+- **Message batching** — tasks queued in the same microtask tick are combined into a single `BatchTask`, reducing `postMessage` call overhead.
+- **Request/response correlation** — each `invoke` task gets a unique ID; the corresponding `result` task is matched and resolves the caller's `Promise`.
+- **Ack support** — a caller can request an `ack` message before the full result, enabling the receiver to signal a cache hit synchronously.
+- **Web Locks integration** — the port sends a `lock` task when a tab acquires a `navigator.locks` lock; the Shared Worker mirrors the lock and is notified when the tab closes, even if `beforeunload` does not fire.
+
+For broadcasts that do not need a response (for example, notifying all tabs that a setting changed), `broadcastChannelWrapper` (`src/lib/broadcastChannelWrapper.ts`) wraps the native `BroadcastChannel` API with typed `emit` / `on` methods:
+
+```typescript
+import {createBroadcastChannelWrapper} from '@lib/broadcastChannelWrapper';
+import {MainBroadcastChannelEvents, unversionedMainBroadcastChannelName} from '@config/broadcastChannel';
+
+const channel = createBroadcastChannelWrapper<MainBroadcastChannelEvents>(
+  unversionedMainBroadcastChannelName
+);
+
+channel.on('someEvent', (payload) => { /* handle */ });
+channel.emit('someEvent', payload);
+```
+
+## Worker summary
+
+| Worker | Type | Source | Shared across tabs |
+|---|---|---|---|
+| Main Worker | `SharedWorker` | `src/lib/mainWorker/index.worker.ts` | Yes |
+| Service Worker | `ServiceWorker` | `sw.ts` | Yes (browser-managed) |
+| Crypto Worker | `Worker` | `src/lib/crypto/crypto.worker.ts` | No (per-SharedWorker) |
+| Lottie Workers | `Worker` (pool) | `src/lib/rlottie/rlottie.worker.ts` | No (per-tab) |
